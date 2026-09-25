@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.88"
 description = "Entitlement-only recurring-payment assertion with member binding for cvld admission"
 license = "LGPL-3.0-only WITH LGPL-3.0-linking-exception"
-repository = "https://github.com/cmtymeet/cpmt"
+repository = "https://github.com/corbet-foss/cpmt"
 readme = "README.md"
 include = ["Cargo.toml", "src/**", "README.md", "CHANGELOG.md", "LICENSE", "LICENSE.md", "LICENSES/LGPL-3.0-only.txt", "LICENSES/LGPL-3.0-linking-exception.txt", "LICENSES/GPL-3.0-only.txt"]
 
