@@ -122,48 +122,4 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use ed25519_dalek::SigningKey;
-
-    fn intermediary() -> (SigningKey, VerifyingKey) {
-        let sk = SigningKey::from_bytes(&[11u8; 32]);
-        let vk = sk.verifying_key();
-        (sk, vk)
-    }
-
-    fn signed(commitment: &str, valid_until: u64, id: &str) -> Entitlement {
-        let (sk, _) = intermediary();
-        let msg = assertion_bytes(commitment, valid_until, id);
-        use ed25519_dalek::Signer;
-        let sig = sk.sign(&msg).to_bytes().to_vec();
-        Entitlement {
-            commitment: commitment.into(),
-            valid_until,
-            assertion_id: id.into(),
-            signature: sig,
-        }
-    }
-
-    #[test]
-    fn roundtrip_and_expiry() {
-        let (_, vk) = intermediary();
-        let e = signed(&commitment("alpha", b"m1"), 2000, "a-1");
-        assert!(verify(&e, &vk, 1000).is_ok());
-        assert_eq!(verify(&e, &vk, 2000), Err(Error::Rejected));
-    }
-
-    #[test]
-    fn provider_ids_rejected() {
-        let (_, vk) = intermediary();
-        for forbidden in ["cus_123", "pay_123", "sub_123"] {
-            let e = signed(forbidden, 2000, "a-2");
-            assert_eq!(verify(&e, &vk, 1000), Err(Error::Rejected));
-        }
-    }
-
-    #[test]
-    fn commitment_is_community_scoped() {
-        assert_ne!(commitment("alpha", b"m1"), commitment("beta", b"m1"));
-    }
-}
+mod tests;

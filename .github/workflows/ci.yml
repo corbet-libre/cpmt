@@ -1,154 +1,175 @@
-name: Manual selected checks
+name: ci
+concurrency:
+  group: ci
+  cancel-in-progress: false
+  queue: max
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
+        persist-credentials: false
+    - uses: dtolnay/rust-toolchain@stable
+    - name: Validate the committed dependency snapshot before refreshing
+      run: python3 .github/check-first-party.py
+    - name: Resolve one fresh dependency snapshot
+      run: 'cargo update
 
-# Public manual fallback. The reviewed dispatcher route (.github/workflows/ccid.yml,
-# same .ci/ccid.toml selectors) is the primary gate; this workflow runs the same
-# selectors by hand for public source consumers. Crow handles inputs that must
-# remain on owned infrastructure.
-on:
-  workflow_dispatch:
-    inputs:
-      checks:
-        description: Comma-separated .ci/ccid.toml selectors, in execution order
-        type: string
-        required: true
-        default: rust
+        rustc --version > resolver.txt
 
+        cargo --version >> resolver.txt
+
+        date -u +%FT%TZ >> resolver.txt
+
+        sha256sum Cargo.lock >> resolver.txt'
+    - uses: actions/upload-artifact@v4
+      with:
+        name: resolved-lock
+        path: 'Cargo.lock
+
+          resolver.txt'
+        retention-days: 7
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@v4
+      with:
+        name: resolved-lock
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+        targets: wasm32-unknown-unknown
+    - uses: Swatinem/rust-cache@v2
+      with:
+        cache-on-failure: true
+    - run: cargo fmt --all --check
+      id: fmt
+    - name: Retain the exact runner formatting patch
+      if: failure() && steps.fmt.outcome == 'failure'
+      run: 'cargo fmt --all
+
+        git diff --binary > "$RUNNER_TEMP/rustfmt.patch"'
+    - uses: actions/upload-artifact@v4
+      if: failure() && steps.fmt.outcome == 'failure'
+      with:
+        name: rustfmt-patch
+        path: ${{ runner.temp }}/rustfmt.patch
+    - run: cargo clippy --locked --all-targets -- -D warnings
+    - run: cargo test --locked
+    - run: cargo check --locked --target wasm32-unknown-unknown
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 22
+    - name: Install matching wasm test runner
+      shell: bash
+      run: 'version=$(python3 -c ''import tomllib; print(next(p["version"] for p in tomllib.load(open("Cargo.lock", "rb"))["package"] if p["name"] == "wasm-bindgen"))'')
+
+        archive="wasm-bindgen-${version}-x86_64-unknown-linux-musl.tar.gz"
+
+        base="https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${version}"
+
+        mkdir -p "$RUNNER_TEMP/cpmt-wasm-runner"
+
+        cd "$RUNNER_TEMP/cpmt-wasm-runner"
+
+        curl --user-agent dependency-ci --fail --location --retry 3 --remote-name "$base/$archive"
+
+        curl --user-agent dependency-ci --fail --location --retry 3 --remote-name "$base/$archive.sha256sum"
+
+        checksum=$(cut -d '' '' -f1 "$archive.sha256sum")
+
+        printf ''%s  %s\n'' "$checksum" "$archive" | sha256sum --check
+
+        tar -xzf "$archive" --strip-components=1
+
+        echo "$PWD" >> "$GITHUB_PATH"'
+    - name: Execute existing signed and refusal vectors on wasm32
+      env:
+        CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+      run: cargo test --locked --target wasm32-unknown-unknown --lib
+    needs:
+    - resolve
+  dependency-policy:
+    needs:
+    - resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@v4
+      with:
+        name: resolved-lock
+    - run: python3 .github/check-first-party.py
+  coverage:
+    needs:
+    - resolve
+    - check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@v4
+      with:
+        name: resolved-lock
+    - uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: llvm-tools-preview
+    - uses: Swatinem/rust-cache@v2
+      with:
+        prefix-key: coverage
+        cache-on-failure: true
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-llvm-cov
+    - run: 'rustc --version
+
+        cargo llvm-cov --version'
+    - name: Measure real native round trips and failure paths
+      run: cargo llvm-cov --locked --workspace --all-features --branch --no-cfg-coverage --no-cfg-coverage-nightly --ignore-filename-regex '/tests/' --json --output-path coverage.json
+    - name: Export exact line and branch locations
+      run: cargo llvm-cov report --locked --branch --ignore-filename-regex '/tests/' --lcov --output-path coverage.lcov
+    - name: Cross-check emitted line inventory independently
+      run: cargo llvm-cov report --locked --branch --ignore-filename-regex '/tests/' --text --output-path coverage.txt
+    - name: Require complete line and branch coverage
+      run: 'python3 .github/test-source-coverage.py
+
+        python3 .github/check-source-coverage.py coverage.lcov coverage.json coverage.txt'
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: coverage
+        path: 'coverage.json
+
+          coverage.lcov
+
+          coverage.txt
+
+          Cargo.lock
+
+          resolver.txt'
+        retention-days: 7
+'on':
+  push:
+    branches:
+    - main
+  pull_request: null
+  workflow_dispatch: null
 permissions:
   contents: read
-
-jobs:
-  checks:
-    if: github.event.repository.private == false
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    env:
-      REQUESTED_CHECKS: ${{ inputs.checks }}
-      RUSTUP_TOOLCHAIN: stable
-      CARGO_BUILD_JOBS: "2"
-      RUST_TEST_THREADS: "2"
-      CARGO_TARGET_DIR: ${{ github.workspace }}/target
-      CI_REPOSITORY_URL: ${{ github.server_url }}/${{ github.repository }}
-    steps:
-      - name: Check out the dispatched source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-
-      - name: Validate selection and record source identity
-        id: plan
-        shell: bash
-        run: |
-          set -euo pipefail
-          export ARTIFACT_ROOT="$RUNNER_TEMP/release-artifacts"
-          echo "ARTIFACT_ROOT=$ARTIFACT_ROOT" >> "$GITHUB_ENV"
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          source_sha256=$(git archive --format=tar HEAD | sha256sum | cut -d ' ' -f 1)
-          export SOURCE_SHA256="$source_sha256"
-          python3 - <<'PYTHON'
-          import hashlib
-          import json
-          import os
-          from pathlib import Path
-          import re
-          import tomllib
-
-          selectors = [part.strip() for part in os.environ['REQUESTED_CHECKS'].split(',')]
-          config = tomllib.loads(Path('.ci/ccid.toml').read_text())
-          package = tomllib.loads(Path('Cargo.toml').read_text())['package']
-          if not selectors or any(not part or part not in config['checks'] for part in selectors):
-              raise SystemExit('Select existing .ci/ccid.toml checks; empty selectors are invalid')
-          if len(set(selectors)) != len(selectors):
-              raise SystemExit('Each check may be selected only once')
-          minimum = package['rust-version']
-          if not re.fullmatch(r'\d+\.\d+(?:\.\d+)?', minimum):
-              raise SystemExit('Cargo rust-version must declare a numeric minimum')
-          with open(os.environ['GITHUB_ENV'], 'a') as environment:
-              environment.write('CI_COMMIT_SHA=' + os.environ['GITHUB_SHA'] + '\n')
-              environment.write('SOURCE_SHA256=' + os.environ['SOURCE_SHA256'] + '\n')
-              environment.write('SELECTED_CHECKS=' + ','.join(selectors) + '\n')
-          inputs = [Path('Cargo.toml'), Path('Cargo.lock')]
-          directory = Path(os.environ['ARTIFACT_ROOT'])
-          directory.mkdir(parents=True, exist_ok=True)
-          receipt = {
-              'schema': 1, 'provider': 'github-actions', 'commit': os.environ['GITHUB_SHA'],
-              'source_sha256': os.environ['SOURCE_SHA256'], 'checks': selectors,
-              'workflow_sha256': hashlib.sha256(Path('.github/workflows/ci.yml').read_bytes()).hexdigest(),
-              'dependency_inputs': {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in inputs if path.is_file()},
-              'status': 'prepared',
-              'run_url': f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
-          }
-          (directory / 'hosted-run.json').write_text(json.dumps(receipt, indent=2) + '\n')
-          PYTHON
-
-      - name: Set up current stable Rust on the hosted runner
-        shell: bash
-        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
-
-      - name: Reuse Rust dependencies
-        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
-        with:
-          shared-key: hosted-selected-linux
-          cache-bin: false
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Record the actual hosted environment
-        shell: bash
-        run: |
-          python3 - <<'PYTHON'
-          import json
-          import os
-          from pathlib import Path
-          import platform
-          import subprocess
-          path = Path(os.environ['ARTIFACT_ROOT']) / 'hosted-run.json'
-          receipt = json.loads(path.read_text())
-          commands = [['rustup', 'run', 'stable', tool, '--version'] for tool in ('rustc', 'cargo')]
-          receipt['platform'] = platform.platform()
-          receipt['tools'] = {' '.join(command): subprocess.check_output(command, text=True).strip() for command in commands}
-          path.write_text(json.dumps(receipt, indent=2) + '\n')
-          print(json.dumps(receipt, indent=2))
-          PYTHON
-
-      - name: Run the selected repository checks
-        id: checks
-        shell: bash
-        run: |
-          set -euo pipefail
-          IFS=',' read -r -a selectors <<< "$SELECTED_CHECKS"
-          for selector in "${selectors[@]}"; do
-            echo "::group::$selector"
-            case "$selector" in
-              rust)
-                cargo fmt --all -- --check
-                cargo test --locked
-                cargo clippy --all-targets --locked -- -D warnings
-                ;;
-              *) echo "unknown selector: $selector" >&2; exit 2 ;;
-            esac
-            echo "::endgroup::"
-          done
-
-      - name: Record the check result
-        if: always() && steps.plan.outcome == 'success'
-        env:
-          CHECK_OUTCOME: ${{ steps.checks.outcome }}
-        shell: bash
-        run: |
-          python3 - <<'PYTHON'
-          import json
-          import os
-          from pathlib import Path
-          path = Path(os.environ['ARTIFACT_ROOT']) / 'hosted-run.json'
-          receipt = json.loads(path.read_text())
-          receipt['status'] = os.environ['CHECK_OUTCOME']
-          path.write_text(json.dumps(receipt, indent=2) + '\n')
-          PYTHON
-
-      - name: Retain exact packages and check receipts
-        if: always() && steps.plan.outcome == 'success'
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
-        with:
-          name: selected-checks-${{ github.sha }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/release-artifacts
-          if-no-files-found: error
-          retention-days: 14
+env:
+  CARGO_BUILD_JOBS: 2
+  CARGO_TERM_COLOR: always
