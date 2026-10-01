@@ -49,9 +49,16 @@ fn commitment_is_community_scoped() {
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 fn signed_field_limits_and_forged_assertions_are_refused() {
     let (_, key) = intermediary();
-    for (binding, id) in [(String::new(), "id".into()), ("x".repeat(129), "id".into()),
-        ("binding".into(), String::new()), ("binding".into(), "x".repeat(129))] {
-        assert_eq!(verify(&signed(&binding, 20, &id), &key, 10), Err(Error::Rejected));
+    for (binding, id) in [
+        (String::new(), "id".into()),
+        ("x".repeat(129), "id".into()),
+        ("binding".into(), String::new()),
+        ("binding".into(), "x".repeat(129)),
+    ] {
+        assert_eq!(
+            verify(&signed(&binding, 20, &id), &key, 10),
+            Err(Error::Rejected)
+        );
     }
     let valid = signed(&"x".repeat(128), 20, &"y".repeat(128));
     assert_eq!(verify(&valid, &key, 10), Ok(()));
@@ -84,7 +91,10 @@ fn replay_and_attestation_inputs_are_domain_separated() {
     assert_ne!(member, replay_key("one"));
     let bytes = attestation_bytes(&member, 20);
     let fields: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(fields, serde_json::json!(["cpmt.attestation.v1", member, 20]));
+    assert_eq!(
+        fields,
+        serde_json::json!(["cpmt.attestation.v1", member, 20])
+    );
     assert_ne!(bytes, attestation_bytes(&member, 21));
     assert_eq!(Error::Rejected.to_string(), "entitlement rejected");
 }
