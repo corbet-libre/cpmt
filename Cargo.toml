@@ -20,8 +20,8 @@ missing_docs = "warn"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
-ed25519-dalek = { version = "2", features = ["serde"] }
+sha2 = "0.11"
+ed25519-dalek = { version = "3", features = ["serde"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
