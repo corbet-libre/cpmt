@@ -5,3 +5,19 @@ project = "cpmt"
 [checks.rust]
 kind = "cargo"
 actions = ["fmt", "test", "clippy"]
+
+# Pre-existing checks above preserved verbatim; hosted Linux gates appended below.
+[checks.verify]
+kind = "commands"
+commands = [["bash", ".ci/verify.sh"]]
+cache_tools = [["rustc", "-vV"], ["cargo", "--version"], ["python3", "--version"], ["node", "--version"], ["curl", "--version"], ["rustup", "run", "nightly", "rustc", "-vV"], ["rustup", "run", "nightly", "cargo", "llvm-cov", "--version"]]
+cache_outputs = ["coverage.json", "coverage.lcov", "coverage.txt"]
+
+[render]
+tool_revision = "77a5ac18542750de020ebf753d22c3200530282b"
+
+[jobs.verify]
+scheduler = "crow"
+checks = ["verify"]
+workflow = "repository-jobs"
+command = ["bash", ".ci/run-cached.sh"]
