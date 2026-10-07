@@ -14,7 +14,7 @@ cache_tools = [["rustc", "-vV"], ["cargo", "--version"], ["python3", "--version"
 cache_outputs = ["coverage.json", "coverage.lcov", "coverage.txt"]
 
 [render]
-tool_revision = "77a5ac18542750de020ebf753d22c3200530282b"
+tool_revision = "e38f347d6941aa105ac4b55a0d4b8fec2ef22433"
 
 [jobs.verify]
 scheduler = "crow"

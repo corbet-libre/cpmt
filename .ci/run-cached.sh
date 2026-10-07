@@ -22,8 +22,6 @@ exec 9>"$state/lock"
 flock -w "${CI_TIMEOUT:-2700}" 9
 mkdir -p "$state/moon-cache/hashes" "$state/moon-cache/outputs" "$state/moon-home"
 mkdir -p .moon/cache
-ln -sfn "$state/moon-cache/hashes" .moon/cache/hashes
-ln -sfn "$state/moon-cache/outputs" .moon/cache/outputs
 tool_source=github:NixOS/nixpkgs/b7c2ada94fe99c15b0dbcf4d11fd7850b957a436
 tool_paths=$(nix build --no-link --print-out-paths "$tool_source#moon" "$tool_source#proto" "$tool_source#python3" "$tool_source#nodejs_24" "$tool_source#curl" "$tool_source#cargo-llvm-cov")
 for path in $tool_paths; do PATH="$path/bin:$PATH"; done
@@ -35,17 +33,15 @@ export PATH="$(dirname "$CCID_BIN"):$CARGO_HOME/bin:$PROTO_HOME/shims:$PROTO_HOM
 export CI_JOBS="${CI_JOBS:-2}" CARGO_BUILD_JOBS="${CI_JOBS:-2}"
 export RUST_TEST_THREADS="${CI_TEST_THREADS:-2}"
 export CARGO_NET_GIT_FETCH_WITH_CLI=true
-if [ -n "${GIT_CONFIG_COUNT:-}" ]; then
-  echo 'GIT_CONFIG_COUNT is already set; refusing to overwrite job git config' >&2
-  exit 2
-fi
-export GIT_CONFIG_KEY_0='url.https://git.corbet.ch/corbet-libs/.insteadOf'
-export GIT_CONFIG_VALUE_0='https://github.com/corbet-libs/'
-export GIT_CONFIG_KEY_1='url.https://git.corbet.ch/corbet-foss/.insteadOf'
-export GIT_CONFIG_VALUE_1='https://github.com/corbet-foss/'
-export GIT_CONFIG_KEY_2='url.https://git.corbet.ch/cmtymeet/.insteadOf'
-export GIT_CONFIG_VALUE_2='https://github.com/cmtymeet/'
-export GIT_CONFIG_COUNT=3
+# Append to any git config the verified runtime already supplies through the environment.
+git_config_base=${GIT_CONFIG_COUNT:-0}
+export GIT_CONFIG_COUNT=$((git_config_base + 3))
+export "GIT_CONFIG_KEY_$((git_config_base + 0))=url.https://git.corbet.ch/corbet-libs/.insteadOf"
+export "GIT_CONFIG_VALUE_$((git_config_base + 0))=https://github.com/corbet-libs/"
+export "GIT_CONFIG_KEY_$((git_config_base + 1))=url.https://git.corbet.ch/corbet-foss/.insteadOf"
+export "GIT_CONFIG_VALUE_$((git_config_base + 1))=https://github.com/corbet-foss/"
+export "GIT_CONFIG_KEY_$((git_config_base + 2))=url.https://git.corbet.ch/cmtymeet/.insteadOf"
+export "GIT_CONFIG_VALUE_$((git_config_base + 2))=https://github.com/cmtymeet/"
 # Shared-first toolchain lock: production base helper verbatim.
 TOOLCHAIN_LOCK_FILE="$toolchains/install.lock"
 TOOLCHAIN_LOCK_TIMEOUT="${CI_TIMEOUT:-2700}"
