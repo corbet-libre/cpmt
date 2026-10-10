@@ -2,7 +2,7 @@
 name = "cpmt"
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.93"
 description = "Payment adapter execution and minimal gate evidence without custody or commercial policy"
 license = "LGPL-3.0-only WITH LGPL-3.0-linking-exception"
 repository = "https://git.corbet.ch/corbet-foss/cpmt"
@@ -14,7 +14,7 @@ crate-type = ["rlib"]
 
 [features]
 default = []
-stripe = ["dep:async-stripe", "dep:tokio"]
+stripe = ["dep:async-stripe", "dep:stripe-client-core", "dep:miniserde", "dep:tokio"]
 storage = ["dep:crlt"]
 
 [lints.rust]
@@ -29,7 +29,9 @@ sha2 = "0.11"
 ed25519-dalek = { version = "3", features = ["serde"] }
 hmac = "0.13"
 zeroize = { version = "1", features = ["derive"] }
-async-stripe = { version = "0.41", default-features = false, features = ["runtime-tokio-hyper-rustls-webpki"], optional = true }
+async-stripe = { version = "1.0.0-rc.9", default-features = false, features = ["rustls-tls-webpki-roots", "rustls-ring", "redact-generated-debug"], optional = true }
+stripe-client-core = { package = "async-stripe-client-core", version = "1.0.0-rc.9", optional = true }
+miniserde = { version = "0.1", optional = true }
 tokio = { version = "1", features = ["time"], optional = true }
 crlt = { git = "https://git.corbet.ch/corbet-foss/crlt", branch = "main", optional = true }
 

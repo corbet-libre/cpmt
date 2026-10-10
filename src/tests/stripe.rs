@@ -72,7 +72,10 @@ const PAID: &str = r#"{"id":"pi_fixture","object":"payment_intent","status":"suc
 async fn sdk_creates_hold_captures_and_observes_without_repeating_a_charge() {
     let (url, calls) = server(vec![HELD, PAID, PAID]).await;
     let mut adapter = adapter();
-    adapter.client = Client::from_url(url.as_str(), "sk_test_fixture");
+    adapter.client = ClientBuilder::new("sk_test_fixture")
+        .url(format!("{url}/"))
+        .build()
+        .unwrap();
     assert_eq!(adapter.capabilities().operations.len(), 8);
     assert_eq!(adapter.max_input_bytes(), 8192);
     let held = adapter
@@ -127,7 +130,10 @@ async fn refunds_and_recurring_arrangements_report_distinct_facts() {
     ])
     .await;
     let mut adapter = adapter();
-    adapter.client = Client::from_url(url.as_str(), "sk_test_fixture");
+    adapter.client = ClientBuilder::new("sk_test_fixture")
+        .url(format!("{url}/"))
+        .build()
+        .unwrap();
     let parent = Private::new(br#"{"id":"pi_fixture","resource":"payment_intents"}"#.to_vec());
     assert_eq!(
         adapter
@@ -188,7 +194,10 @@ async fn malformed_or_lost_provider_replies_stay_unknown() {
     ])
     .await;
     let mut adapter = adapter();
-    adapter.client = Client::from_url(url.as_str(), "sk_test_fixture");
+    adapter.client = ClientBuilder::new("sk_test_fixture")
+        .url(format!("{url}/"))
+        .build()
+        .unwrap();
     for _ in 0..3 {
         assert_eq!(
             adapter
@@ -254,7 +263,9 @@ fn provider_data_is_reduced_and_unrecognized_statuses_never_prove_payment() {
             object: object.into(),
             status: status.into(),
             client_secret: Some("secret".into()),
-            next_action: Some(serde_json::json!({"url":"https://example.test"})),
+            next_action: Some(
+                miniserde::json::from_str(r#"{"url":"https://example.test"}"#).unwrap(),
+            ),
         };
         let observation = Stripe::reduce(reply, resource, None).unwrap();
         assert_eq!(observation.state, state);
@@ -268,9 +279,11 @@ fn provider_data_is_reduced_and_unrecognized_statuses_never_prove_payment() {
         ("refunds", None),
         ("payment_intents", Some("other")),
     ] {
-        assert!(Stripe::reduce(serde_json::from_str(PAID).unwrap(), resource, expected).is_err());
+        assert!(
+            Stripe::reduce(miniserde::json::from_str(PAID).unwrap(), resource, expected).is_err()
+        );
     }
-    let mut reply: Reply = serde_json::from_str(PAID).unwrap();
+    let mut reply: Reply = miniserde::json::from_str(PAID).unwrap();
     reply.id = "../escape".into();
     assert!(Stripe::reduce(reply, "payment_intents", None).is_err());
 }
@@ -372,7 +385,10 @@ fn configuration_requires_explicit_credentials_and_limits() {
 async fn lost_known_object_replies_preserve_read_only_reconciliation() {
     let (url, calls) = server(vec!["", PAID, ""]).await;
     let mut adapter = adapter();
-    adapter.client = Client::from_url(url.as_str(), "sk_test_fixture");
+    adapter.client = ClientBuilder::new("sk_test_fixture")
+        .url(format!("{url}/"))
+        .build()
+        .unwrap();
     let parent = Private::new(br#"{"id":"pi_fixture","resource":"payment_intents"}"#.to_vec());
     let result = adapter
         .execute(
@@ -404,4 +420,27 @@ async fn lost_known_object_replies_preserve_read_only_reconciliation() {
     let calls = calls.await.unwrap();
     assert_eq!(calls.len(), 3);
     assert!(calls[1].starts_with("GET /v1/payment_intents/pi_fixture "));
+}
+
+#[tokio::test]
+async fn invalid_sdk_credentials_and_idempotency_keys_fail_before_network() {
+    assert!(
+        Stripe::new(
+            "stripe".into(),
+            Private::new(b"invalid\nsecret".to_vec()),
+            Duration::from_secs(1),
+            100
+        )
+        .is_err()
+    );
+    assert!(matches!(
+        adapter()
+            .execute(
+                &request("stripe.intent.create", serde_json::json!({})),
+                "",
+                None
+            )
+            .await,
+        Err(Error::Invalid)
+    ));
 }

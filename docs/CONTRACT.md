@@ -61,7 +61,9 @@ uniform and ambiguous outcomes remain `Unknown`. Lost create responses without
 an object ID require provider-side reconciliation; a fresh ID is not a safe retry.
 
 Upstream: [async-stripe](https://github.com/arlyon/async-stripe), permissive
-MIT/Apache-2.0 licensing. Protocol encoding, authentication and API version belong
+MIT/Apache-2.0 licensing. The current 1.0 release-candidate SDK line is used
+because 0.41 retains affected, obsolete TLS/HTTP dependencies; CI checks the
+complete feature graph against current RustSec advisories. Protocol encoding, authentication and API version belong
 to the SDK. `crlt` owns storage; `ed25519-dalek` owns assertion signatures; `hmac`,
 `sha2` and `zeroize` provide maintained cryptographic and memory primitives.
 Use semver ranges and current `main` for first-party libraries, never exact

@@ -11,6 +11,8 @@ export RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-stable}"
 export RUNNER_TEMP="${RUNNER_TEMP:-$(mktemp -d)}"
 export GITHUB_PATH="${GITHUB_PATH:-$RUNNER_TEMP/github_path}"
 touch "$GITHUB_PATH"
+cargo update
+cp Cargo.lock "$ARTIFACT_ROOT/Cargo.lock"
 python3 .github/check-first-party.py
 cargo deny --all-features check advisories
 cargo fmt --all --check

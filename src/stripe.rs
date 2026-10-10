@@ -3,7 +3,8 @@ use crate::payments::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::time::Duration;
-use stripe::{Client, RequestStrategy};
+use stripe::{Client, ClientBuilder, IdempotencyKey, RequestStrategy};
+use stripe_client_core::{RequestBuilder, StripeMethod};
 
 /// Stripe adapter using upstream authentication, encoding and API-version handling.
 /// No connected-account headers, transfers, balances or wallet custody are exposed.
@@ -58,13 +59,13 @@ struct Reference {
     id: String,
 }
 
-#[derive(Deserialize)]
+#[derive(miniserde::Deserialize)]
 struct Reply {
     id: String,
     object: String,
     status: String,
     client_secret: Option<String>,
-    next_action: Option<Value>,
+    next_action: Option<miniserde::json::Value>,
 }
 
 impl Stripe {
@@ -83,7 +84,9 @@ impl Stripe {
         }
         Ok(Self {
             id,
-            client: Client::new(secret),
+            client: ClientBuilder::new(secret)
+                .build()
+                .map_err(|_| Error::Invalid)?,
             timeout,
             max_input_bytes,
         })
@@ -163,7 +166,11 @@ impl Stripe {
         })
         .expect("provider reference strings serialize to JSON");
         let member_action = if state == State::RequiresAction {
-            Some(Private::new(serde_json::to_vec(&serde_json::json!({"client_secret":reply.client_secret, "next_action":reply.next_action})).map_err(|_|Error::Invalid)?))
+            let next_action = reply.next_action.map(|value| {
+                serde_json::from_str::<Value>(&miniserde::json::to_string(&value))
+                    .expect("SDK JSON value is valid JSON")
+            });
+            Some(Private::new(serde_json::to_vec(&serde_json::json!({"client_secret":reply.client_secret, "next_action":next_action})).expect("JSON value serializes")))
         } else {
             None
         };
@@ -216,17 +223,18 @@ impl Adapter for Stripe {
                 expected = Some(parent.id.as_str());
             }
         }
-        let client = self
-            .client
-            .clone()
-            .with_strategy(RequestStrategy::Idempotent(key.into()));
-        let future = async {
-            if request.operation == "stripe.subscription.cancel" {
-                client.delete_query::<Reply, _>(&path, &params).await
-            } else {
-                client.post_form::<Reply, _>(&path, &params).await
-            }
+        let path = format!("/{path}");
+        let request = if request.operation == "stripe.subscription.cancel" {
+            RequestBuilder::new(StripeMethod::Delete, path).query(&params)
+        } else {
+            RequestBuilder::new(StripeMethod::Post, path).form(&params)
         };
+        let request = request
+            .customize::<Reply>()
+            .request_strategy(RequestStrategy::Idempotent(
+                IdempotencyKey::new(key).map_err(|_| Error::Invalid)?,
+            ));
+        let future = request.send(&self.client);
         let uncertain = || Observation {
             // Known-object operations can still be read after a lost response.
             // Refund creation returns a different object; its ID remains unknown.
@@ -259,7 +267,8 @@ impl Adapter for Stripe {
         };
         let reference = reference(continuation)?;
         let path = format!("{}/{}", reference.resource, reference.id);
-        match tokio::time::timeout(self.timeout, self.client.get::<Reply>(&path)).await {
+        let read = RequestBuilder::new(StripeMethod::Get, format!("/{path}")).customize::<Reply>();
+        match tokio::time::timeout(self.timeout, read.send(&self.client)).await {
             Ok(Ok(reply)) => Self::reduce(reply, &reference.resource, Some(&reference.id)),
             _ => Ok(Observation {
                 continuation: Some(Private::new(continuation.expose().to_vec())),
