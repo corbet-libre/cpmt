@@ -1,9 +1,9 @@
 [package]
 name = "cpmt"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
-description = "Entitlement-only recurring-payment assertion with member binding for cvld admission"
+description = "Payment adapter execution and minimal gate evidence without custody or commercial policy"
 license = "LGPL-3.0-only WITH LGPL-3.0-linking-exception"
 repository = "https://git.corbet.ch/corbet-foss/cpmt"
 readme = "README.md"
@@ -11,6 +11,11 @@ include = ["Cargo.toml", "src/**", "README.md", "CHANGELOG.md", "LICENSE", "LICE
 
 [lib]
 crate-type = ["rlib"]
+
+[features]
+default = []
+stripe = ["dep:async-stripe", "dep:tokio"]
+storage = ["dep:crlt"]
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -22,6 +27,17 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
 ed25519-dalek = { version = "3", features = ["serde"] }
+async-trait = "0.1"
+hmac = "0.13"
+zeroize = { version = "1", features = ["derive"] }
+async-stripe = { version = "0.41", default-features = false, features = ["runtime-tokio-hyper-rustls-webpki", "billing"], optional = true }
+tokio = { version = "1", features = ["time"], optional = true }
+crlt = { git = "https://git.corbet.ch/corbet-foss/crlt", branch = "main", optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt", "time", "net", "io-util", "sync"] }
+serde_urlencoded = "0.7"
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"

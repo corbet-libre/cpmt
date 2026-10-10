@@ -1,15 +1,21 @@
-//! Entitlement-only recurring-payment assertion with member binding.
+//! Payment execution through adapters, without custody or commercial policy.
 //!
-//! The intermediary owns the billing relationship. The library verifies an
-//! Ed25519-signed entitlement for one member commitment with expiry and
-//! replay guard. Customer and payment ids are forbidden here: a filter that
-//! merely drops fields does not meet the boundary.
+//! [`payments`] supplies the common contract used by fiat and cryptocurrency
+//! adapters. Provider evidence stays inside the payment boundary. The signed
+//! entitlement helpers below support providers that already issue assertions.
+#![forbid(unsafe_code)]
+
+pub mod payments;
+#[cfg(feature = "storage")]
+pub mod storage;
+#[cfg(feature = "stripe")]
+pub mod stripe;
 
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
 
 /// Entitlement as asserted by the independent intermediary.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Entitlement {
     /// Opaque member commitment (e.g. hash of member id + community).
     /// Must not be a provider customer id the operator could resolve.
@@ -20,6 +26,12 @@ pub struct Entitlement {
     pub assertion_id: String,
     /// Intermediary signature over assertion bytes.
     pub signature: Vec<u8>,
+}
+
+impl std::fmt::Debug for Entitlement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Entitlement").finish_non_exhaustive()
+    }
 }
 
 /// Errors carry no customer, payment or member identity.

@@ -1,28 +1,61 @@
-# Payment entitlement contract
+# Payment adapter contract
 
-`cpmt` is the LGPL entitlement-only recurring-payment gate used by cvld. It
-checks a single signed intermediary assertion; ordering, fallback and minimum
-provider requirements belong to `cfbk` under `crbk` settings.
+The composition root authenticates the member and supplies `Instruction`:
+nonzero random operation ID, optional parent ID, adapter, advertised operation,
+service/member/action binding, exclusive start deadline, trusted commercial terms
+and transient evidence. Never copy commercial terms from an unauthenticated
+client. There is no automatic provider selection or payment policy.
 
-The independent intermediary must own customer/payment records and recurring
-renewals, failures, cancellation and support. The operator receives only an
-opaque scoped commitment, eligibility expiry and a one-use assertion identifier.
-A webhook filter controlled by the operator, expandable API access, customer
-exports or support lookup do not meet that boundary. GNU Taler, wallet funding
-and coins are outside this fiat-payment contract.
+Adapters are trusted library code, not client plugins. They must:
 
-`verify` authenticates the existing `cpmt.assertion.v1` JSON-array bytes using
-the configured Ed25519 public key, checks nonempty bounded fields and strict
-expiry, and rejects obvious provider-ID prefixes with a uniform error. This is
-a syntactic guard, not proof that a provider enforces the privacy contract.
-The trusted caller must compare the signed commitment to its authenticated
-member/community commitment and atomically consume the replay key until expiry
-before authorizing admission. `verify` has no storage or subject argument and
-cannot enforce those caller obligations. Durable storage belongs to the host
-through `crlt`; this library stores no customer data or request/login history.
+- Advertise only implemented operations; use current upstream libraries.
+- Bind member evidence to the caller's amount, currency, recipient and resource.
+- Use the provided stable key for upstream idempotency. Never hide retries.
+- Return `Unknown` for ambiguous side effects; `observe` is read-only.
+- Distinguish verification, holds, collection, arrangements and refunds.
+- Emit a stable, protocol-namespaced receipt identity for positive gate facts.
+  Repeated observation of the same fact must produce the same identity, even
+  through different configured adapters. Include enough detail to distinguish
+  facts such as authorization and collection, without inventing a new receipt.
+- Retain only references required for later operations. Return member actions
+  separately, for delivery to the originally authenticated member only.
+- Discard provider responses and diagnostics; never return billing/KYC records.
 
-`cpmt.commitment.v1`, `cpmt.replay.v1` and `cpmt.attestation.v1` preserve the
-existing wire domains. Cryptography is delegated to Ed25519-Dalek and RustCrypto
-SHA-256; no local primitive is implemented. Qualified provider integration
-remains open. Tests use real cryptographic fixtures and execute natively and
-on Wasm, without charges, account registration, outreach or registry publication.
+The executor persists a keyed instruction digest and `Unknown` before dispatch.
+Concurrent calls or process cancellation cannot dispatch that ID twice. Journal
+writes use compare-and-swap revisions. A failed final write leaves an uncertain
+result and is never success. This is at-most-once dispatch, not a guarantee that
+a provider collected money. Reconciliation without a provider reference may
+remain `Unknown`; no generic library can infer an unreported external outcome.
+
+Journal records remain inside the payment boundary. They contain opaque operation
+and context identifiers, state, optional provider validity, keyed receipt and
+instruction digests, a revision, and optional necessary provider continuation.
+No financial ledger, raw request history, payment-method details or KYC records
+are stored. `forget` erases the continuation but retains duplicate-execution
+protection. Do not expose serialized `Record` values as application APIs.
+
+A gate consumes `Evidence`, rechecks its service/member/action/provider and
+exclusive expiry, and atomically commits its claim with the gate result. Policy
+chooses which fact is acceptable and how long it remains valid; provider expiry
+caps that choice. Evidence and outcomes are snapshots; provider changes require
+observation and the host's existing invalidation policy.
+
+## Stripe adapter
+
+`terms` is a Stripe parameter object. It preserves provider-specific currency,
+amount and subscription behavior. Optional `evidence` is a JSON string containing
+a provider-issued payment-method token; it cannot override commercial parameters.
+Never send raw card data. Parent operations supply object references for capture,
+cancellation, refunds or subscription updates. No arbitrary object IDs, connected
+account headers, transfers or application fees are accepted. Provider errors are
+uniform and ambiguous outcomes remain `Unknown`. Lost create responses without
+an object ID require provider-side reconciliation; a fresh ID is not a safe retry.
+
+Upstream: [async-stripe](https://github.com/arlyon/async-stripe), permissive
+MIT/Apache-2.0 licensing. Protocol encoding, authentication and API version belong
+to the SDK. `crlt` owns storage; `ed25519-dalek` owns assertion signatures; `hmac`,
+`sha2` and `zeroize` provide maintained cryptographic and memory primitives.
+Use semver ranges and current `main` for first-party libraries, never exact
+version or commit requirements. The lockfile records the dependency snapshot
+validated by CI; updating it is part of dependency maintenance.
