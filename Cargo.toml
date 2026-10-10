@@ -15,7 +15,6 @@ crate-type = ["rlib"]
 [features]
 default = []
 stripe = ["dep:async-stripe", "dep:stripe-client-core", "dep:miniserde", "dep:tracing", "dep:tokio"]
-storage = ["dep:crlt"]
 providers = ["dep:reqwest", "dep:rust_decimal", "dep:tracing", "dep:base64", "dep:time", "serde_json/arbitrary_precision"]
 
 [lints.rust]
@@ -30,19 +29,18 @@ sha2 = "0.11"
 ed25519-dalek = { version = "3", features = ["serde"] }
 hmac = "0.13"
 zeroize = { version = "1", features = ["derive"] }
+cfbk = { git = "https://git.corbet.ch/corbet-foss/cfbk", branch = "main" }
 async-stripe = { version = "1.0.0-rc.9", default-features = false, features = ["rustls-tls-webpki-roots", "rustls-aws-lc-rs", "redact-generated-debug"], optional = true }
 stripe-client-core = { package = "async-stripe-client-core", version = "1.0.0-rc.9", optional = true }
 miniserde = { version = "0.1", optional = true }
 tracing = { version = "0.1", optional = true }
 tokio = { version = "1", features = ["time"], optional = true }
-crlt = { git = "https://git.corbet.ch/corbet-foss/crlt", branch = "main", optional = true }
 rust_decimal = { version = "1", optional = true }
 time = { version = "0.3", features = ["parsing"], optional = true }
 base64 = { version = "0.23", optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query"], optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt", "time", "net", "io-util", "sync"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]

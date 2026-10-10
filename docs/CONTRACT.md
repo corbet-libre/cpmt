@@ -1,71 +1,89 @@
-# Payment adapter contract
+# Payment domain contract
 
-The composition root authenticates the member and supplies `Instruction`:
-nonzero random operation ID, optional parent ID, adapter, advertised operation,
-service/member/action binding, exclusive start deadline, trusted commercial terms
-and transient evidence. Never copy commercial terms from an unauthenticated
-client. There is no automatic provider selection or payment policy.
+The application supplies authenticated scope/member/action, commercial terms,
+requested meaning, account configuration, credentials, time and cost limits.
+The domain verifies and transforms payment facts; providers own their protocol
+and financial behavior. Provider installation does not activate an offer.
 
-Adapters are trusted library code, not client plugins. They must:
+## RAM and caller state
 
-- Advertise only implemented operations and a nonzero combined input limit; use
-  current upstream libraries. The executor applies the limit before hashing or
-  writing an operation marker.
-- Bind member evidence to the caller's amount, currency, recipient and resource.
-- Use the provided stable key for upstream idempotency. Never hide retries.
-- Return `Unknown` for ambiguous side effects; `observe` is read-only.
-- Distinguish verification, holds, collection, arrangements and refunds.
-- Emit a stable, protocol-namespaced receipt identity for positive gate facts.
-  Repeated observation of the same fact must produce the same identity, even
-  through different configured adapters. Include enough detail to distinguish
-  facts such as authorization and collection, without inventing a new receipt.
-- Retain only references required for later operations. Return member actions
-  separately, for delivery to the originally authenticated member only.
-- Discard provider responses and diagnostics; never return billing/KYC records.
+All request, response, credential and session buffers remain in memory. No direct
+database, SQL implementation, filesystem cache or hidden SDK persistence belongs
+here. `Journal` is a caller-owned atomic state port, not a way to store raw data.
+Its minimal record contains opaque operation/context identity, request/receipt
+digests, state, mode, fee reservation and necessary continuation. Host persistence,
+backups, encryption and retention are outside this library.
 
-The executor persists a keyed instruction digest and `Unknown` before dispatch.
-Concurrent calls or process cancellation cannot dispatch that ID twice. Journal
-writes use compare-and-swap revisions. The namespace is atomically bound to the
-injected key fingerprint; reopening with a different key fails before dispatch. Observation requires a retained reference and never revises an unfinished
-dispatch. `forget` refuses an unfinished dispatch so a late reply cannot silently
-undo acknowledged erasure. A failed final write leaves an uncertain
-result and is never success. This is at-most-once dispatch, not a guarantee that
-a provider collected money. Reconciliation without a provider reference may
-remain `Unknown`; no generic library can infer an unreported external outcome.
+`begin` must reserve the operation ID and maximum fee exposure atomically under
+the host's configured budget. Repeated IDs return the prior record without a
+second reservation. `replace` uses compare-and-swap and atomically reserves receipt
+ownership. Pending/uncertain operations retain maximum exposure. A lost final
+write is not success. A stable injected key prevents reopening with another key.
+`forget` erases continuation without erasing replay markers and refuses unfinished
+operations. Losing caller state or its key destroys restart guarantees; never
+silently initialize new state to retry an uncertain payment.
 
-Journal records remain inside the payment boundary. They contain opaque operation
-and context identifiers, state, optional provider validity, keyed receipt and
-instruction digests, a revision, and optional necessary provider continuation.
-No financial ledger, raw request history, payment-method details or KYC records
-are stored. `forget` erases the continuation but retains duplicate-execution
-protection. Do not expose serialized `Record` values as application APIs.
+## Cost and modes
 
-A gate consumes `Evidence` and rechecks its service/member/action/provider and
-exclusive expiry. Community gates (`cgts`) atomically spend the receipt claim
-with their result. Global gates (`cgbl`) accept a fact for a bound check using
-existing retry protection; it is neither a one-use purchase nor person uniqueness.
-The payment journal prevents a receipt moving between authenticated contexts.
-Policy chooses which fact is acceptable and how long it remains valid; provider
-expiry caps that choice. Evidence and outcomes are snapshots; provider changes require
-observation and the host's existing invalidation policy.
+`preview` accepts a verified provider quote or explicitly configured tariff with
+provenance and expiry. It performs no provider I/O. Its binding covers the random
+operation ID, account instance, actual mode, action, context, parent, deadline,
+commercial terms and evidence. The shared `cfbk` planner owns ordering and budget
+arithmetic. Unknown/unbounded costs cannot create a permit. No implicit exchange
+rate, floating-point money or assumption that sandbox is free is permitted.
 
-## Stripe adapter
+Every dispatch requires a permit. Adapters receive `cost::Dispatch`, check it
+against their actual account instance and mode, and make only the declared calls.
+Low-level adapter users must perform the same caller-owned atomic reservation
+before constructing a Dispatch. The complete action tariff must cover all its
+calls, including x402 discovery and verification before settlement. Observations
+also use fresh reserved operation IDs and explicit cost authorization.
 
-`terms` is a Stripe parameter object. It preserves provider-specific currency,
-amount and subscription behavior. Optional `evidence` is a JSON string containing
-a provider-issued payment-method token; it cannot override commercial parameters.
-Never send raw card data. Parent operations supply object references for capture,
-cancellation, refunds or subscription updates. No arbitrary object IDs, connected
-account headers, transfers or application fees are accepted. Provider errors are
-uniform and ambiguous outcomes remain `Unknown`. Lost create responses without
-an object ID require provider-side reconciliation; a fresh ID is not a safe retry.
+Actual fees are reported only when established, separately from payment principal.
+Missing actual fees remain unknown; the maximum stays reserved. Pending and
+uncertain results stop fallback. A provider failure can still incur fees. No
+operation, quote request, provider activation or credential acquisition is implied
+by planning, registration or simulation.
 
-Upstream: [async-stripe](https://github.com/arlyon/async-stripe), permissive
-MIT/Apache-2.0 licensing. The current 1.0 release-candidate SDK line is used
-because 0.41 retains affected, obsolete TLS/HTTP dependencies; CI checks the
-complete feature graph against current RustSec advisories. Protocol encoding, authentication and API version belong
-to the SDK. `crlt` owns storage; `ed25519-dalek` owns assertion signatures; `hmac`,
-`sha2` and `zeroize` provide maintained cryptographic and memory primitives.
-Use semver ranges and current `main` for first-party libraries, never exact
-version or commit requirements. The lockfile records the dependency snapshot
-validated by CI; updating it is part of dependency maintenance.
+## Rich and minimal results
+
+`Disclosure::Minimal` is the normal gate path. Explicit `Complete` returns available
+upstream payloads in private transient buffers. Native extensions and private
+provider diagnostics remain distinguishable from authenticated domain facts.
+Malformed payloads and unsuccessful HTTP responses may be returned privately;
+they cannot mint a proof. Transport errors without available payloads remain
+uncertain. SDK omissions are documented rather than reconstructed or invented.
+
+Only necessary member actions go to the originally authenticated member. Complete
+provider results and operator credentials are not member handovers. No revealing
+Debug, ordinary errors or response logs. Owned byte buffers zeroize on drop;
+upstream/parser copies and host swap/dumps prevent promises of perfect erasure.
+Replays cannot reconstruct discarded private responses.
+
+## Financial meaning and gates
+
+An instruction carries trusted financial terms. A paid-access projection requires
+an outcome matching that exact instruction and a provider-established financial
+condition, plus the caller's required fact, level and interval. Partial or unproven
+amounts never establish the condition. Provider validity caps the requested end.
+The result contains only the requested level/period and opaque bound gate evidence.
+There is no built-in price, level hierarchy, subscription rule or release policy.
+
+Generic Evidence checks scope/member/action/provider and exclusive expiry.
+Community gate consumers atomically spend its stable receipt claim; global gate
+consumers accept an in-process fact under their own retry protection. A payment
+receipt does not identify a unique person. Sandbox facts cannot mint production
+evidence. Raw provider JSON cannot construct Outcome or paid-access proofs.
+
+## Maintained integrations
+
+Adapters advertise implemented operations and enforce input/response/timeout
+limits. Observe is read-only and never repeats settlement. Lost create responses
+without a reference remain uncertain; new IDs are not safe retries. Parent
+references must come from the same authenticated account/context. Custody,
+connected-account transfers and platform fee/split instructions are unsupported.
+
+Use maintained SDK/protocol/HTTP/cryptographic libraries, current compatible
+ranges and first-party main branches; no exact manifest pins or private forks.
+Owned code forbids unsafe Rust. Lockfiles record the CI-tested graph. Fixture
+validation is distinct from unexecuted live provider qualification.

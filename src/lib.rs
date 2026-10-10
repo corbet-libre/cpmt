@@ -5,11 +5,12 @@
 //! entitlement helpers below support providers that already issue assertions.
 #![forbid(unsafe_code)]
 
+pub mod access;
+pub mod cost;
+pub mod details;
 pub mod payments;
 #[cfg(feature = "providers")]
 pub mod providers;
-#[cfg(feature = "storage")]
-pub mod storage;
 #[cfg(feature = "stripe")]
 pub mod stripe;
 
@@ -135,5 +136,8 @@ fn hex(bytes: &[u8]) -> String {
     out
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "tests/support.rs"]
+mod test_support;
 #[cfg(test)]
 mod tests;

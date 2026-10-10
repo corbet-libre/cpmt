@@ -42,7 +42,7 @@ async fn server(replies: Vec<&str>) -> (String, tokio::task::JoinHandle<Vec<Stri
 }
 
 fn adapter() -> Stripe {
-    Stripe::new(
+    configured(
         "stripe".into(),
         Private::new(b"sk_test_fixture".to_vec()),
         Duration::from_secs(2),
@@ -52,6 +52,7 @@ fn adapter() -> Stripe {
 }
 fn request(op: &str, terms: Value) -> Instruction {
     Instruction {
+        kind: Action::Execute,
         id: [1; 32],
         parent: None,
         adapter: "stripe".into(),
@@ -276,6 +277,10 @@ fn provider_data_is_reduced_and_unrecognized_statuses_never_prove_payment() {
         ),
     ] {
         let reply = Reply {
+            amount: None,
+            amount_received: None,
+            amount_capturable: None,
+            currency: None,
             id: "id_fixture".into(),
             object: object.into(),
             status: status.into(),
@@ -383,7 +388,7 @@ fn configuration_requires_explicit_credentials_and_limits() {
         ("stripe", vec![1], 1, 0),
     ] {
         assert!(
-            Stripe::new(
+            configured(
                 id.into(),
                 Private::new(secret),
                 Duration::from_secs(timeout),
@@ -438,7 +443,7 @@ async fn lost_known_object_replies_preserve_read_only_reconciliation() {
 #[tokio::test]
 async fn invalid_sdk_credentials_and_idempotency_keys_fail_before_network() {
     assert!(
-        Stripe::new(
+        configured(
             "stripe".into(),
             Private::new(b"invalid\nsecret".to_vec()),
             Duration::from_secs(1),
@@ -575,4 +580,29 @@ async fn member_actions_are_projected_without_unneeded_provider_details() {
         serde_json::json!({"id":"pi_fixture","resource":"payment_intents"})
     );
     assert_eq!(calls.await.unwrap().len(), 1);
+}
+
+fn configured(id: String, secret: Private, timeout: Duration, max: usize) -> Result<Stripe> {
+    Stripe::new(id, secret, timeout, max, Mode::Sandbox)
+}
+impl Stripe {
+    async fn execute(
+        &self,
+        request: &Instruction,
+        key: &str,
+        previous: Option<&Private>,
+    ) -> Result<Observation> {
+        let auth = Dispatch::new(request, crate::test_support::permit(request, self.mode), 0)?;
+        Adapter::execute(self, &auth, key, previous).await
+    }
+    async fn observe(&self, operation: &str, previous: Option<&Private>) -> Result<Observation> {
+        let mut request = request(operation, serde_json::json!({}));
+        request.kind = Action::Observe;
+        let auth = Dispatch::new(
+            &request,
+            crate::test_support::permit(&request, self.mode),
+            0,
+        )?;
+        Adapter::observe(self, &auth, previous).await
+    }
 }

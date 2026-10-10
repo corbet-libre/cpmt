@@ -1,4 +1,6 @@
 //! Stripe SDK adapter. Commercial parameters come from the authenticated caller.
+use crate::cost::{Dispatch, Mode};
+use crate::details::ProviderReply;
 use crate::payments::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -10,6 +12,7 @@ use tracing::instrument::WithSubscriber;
 /// Stripe adapter using upstream authentication, encoding and API-version handling.
 /// No connected-account headers, transfers, balances or wallet custody are exposed.
 pub struct Stripe {
+    mode: Mode,
     id: String,
     client: Client,
     timeout: Duration,
@@ -58,6 +61,46 @@ const ROUTES: &[(&str, &str, &str, &str)] = &[
 struct Reference {
     resource: String,
     id: String,
+    #[serde(default)]
+    financial: Option<Financial>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct Financial {
+    amount: u64,
+    currency: String,
+}
+impl Financial {
+    fn from_terms(terms: &Map<String, Value>, parent: Option<&Self>) -> Option<Self> {
+        let amount = terms
+            .get("amount_to_capture")
+            .or_else(|| terms.get("amount"))
+            .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
+            .or_else(|| parent.map(|p| p.amount))?;
+        let currency = terms
+            .get("currency")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| parent.map(|p| p.currency.clone()))?;
+        Some(Self { amount, currency })
+    }
+    fn satisfied(
+        &self,
+        amount: Option<u64>,
+        received: Option<u64>,
+        capturable: Option<u64>,
+        currency: Option<&str>,
+        state: State,
+    ) -> bool {
+        let amount = match state {
+            State::Collected => received,
+            State::Authorized => capturable,
+            State::Refunded | State::Released => amount,
+            _ => None,
+        };
+        amount == Some(self.amount)
+            && currency.is_some_and(|c| c.eq_ignore_ascii_case(&self.currency))
+    }
 }
 
 #[derive(Deserialize)]
@@ -67,13 +110,28 @@ struct Reply {
     status: String,
     client_secret: Option<String>,
     next_action: Option<Value>,
+    amount: Option<u64>,
+    amount_received: Option<u64>,
+    amount_capturable: Option<u64>,
+    currency: Option<String>,
 }
 
 fn decode(mut object: miniserde::json::Object) -> Result<Reply> {
     // Reduce the SDK's transient object before crossing into our typed schema.
     // Serde also bounds nesting in provider-supplied member actions.
     object.retain(|key, _| {
-        ["id", "object", "status", "client_secret", "next_action"].contains(&key.as_str())
+        [
+            "id",
+            "object",
+            "status",
+            "client_secret",
+            "next_action",
+            "amount",
+            "amount_received",
+            "amount_capturable",
+            "currency",
+        ]
+        .contains(&key.as_str())
     });
     let json = zeroize::Zeroizing::new(miniserde::json::to_string(&object));
     serde_json::from_str(&json).map_err(|_| Error::Rejected)
@@ -87,13 +145,19 @@ impl Stripe {
         secret: Private,
         timeout: Duration,
         max_input_bytes: usize,
+        mode: Mode,
     ) -> Result<Self> {
         crate::payments::identifier(&id)?;
         let secret = std::str::from_utf8(secret.expose()).map_err(|_| Error::Invalid)?;
-        if secret.is_empty() || timeout.is_zero() || max_input_bytes == 0 {
+        if secret.is_empty()
+            || timeout.is_zero()
+            || max_input_bytes == 0
+            || mode == Mode::Simulation
+        {
             return Err(Error::Invalid);
         }
         Ok(Self {
+            mode,
             id,
             client: ClientBuilder::new(secret)
                 .build()
@@ -174,6 +238,7 @@ impl Stripe {
         let continuation = serde_json::to_vec(&Reference {
             resource: resource.into(),
             id: reply.id.clone(),
+            financial: None,
         })
         .expect("provider reference strings serialize to JSON");
         let member_action = if state == State::RequiresAction {
@@ -182,6 +247,8 @@ impl Stripe {
             None
         };
         Ok(Observation {
+            satisfies_terms: false,
+            actual_cost: None,
             state,
             valid_until: None,
             continuation: Some(Private::new(continuation)),
@@ -189,11 +256,58 @@ impl Stripe {
                 format!("stripe:{object}:{}:{state:?}", reply.id).into_bytes(),
             )),
             member_action,
+            upstream: Vec::new(),
         })
+    }
+
+    fn project(
+        reply: miniserde::json::Object,
+        resource: &str,
+        expected: Option<&str>,
+        financial: Option<&Financial>,
+    ) -> Observation {
+        let payload = Private::new(miniserde::json::to_string(&reply).into_bytes());
+        let mut observation = decode(reply)
+            .and_then(|reply| {
+                let money = (
+                    reply.amount,
+                    reply.amount_received,
+                    reply.amount_capturable,
+                    reply.currency.clone(),
+                );
+                let mut observation = Self::reduce(reply, resource, expected)?;
+                if let Some(terms) = financial {
+                    observation.satisfies_terms = terms.satisfied(
+                        money.0,
+                        money.1,
+                        money.2,
+                        money.3.as_deref(),
+                        observation.state,
+                    );
+                    if let Some(retained) = observation.continuation.as_ref() {
+                        let mut value = reference(retained)?;
+                        value.financial = Some(terms.clone());
+                        observation.continuation = Some(Private::new(
+                            serde_json::to_vec(&value).expect("reference serializes"),
+                        ));
+                    }
+                }
+                Ok(observation)
+            })
+            .unwrap_or_else(|_| Observation::fact(State::Unknown));
+        observation.upstream.push(ProviderReply {
+            phase: "response",
+            http_status: None,
+            payload,
+        });
+        observation
     }
 }
 
 impl Adapter for Stripe {
+    fn mode(&self) -> Mode {
+        self.mode
+    }
     fn max_input_bytes(&self) -> usize {
         self.max_input_bytes
     }
@@ -205,10 +319,14 @@ impl Adapter for Stripe {
     }
     async fn execute(
         &self,
-        request: &Instruction,
+        request: &Dispatch<'_>,
         key: &str,
         previous: Option<&Private>,
     ) -> Result<Observation> {
+        request.check(&self.id, self.mode)?;
+        if request.kind != Action::Execute {
+            return Err(Error::Invalid);
+        }
         let (_, resource, parent_resource, suffix) = ROUTES
             .iter()
             .find(|r| r.0 == request.operation)
@@ -231,6 +349,8 @@ impl Adapter for Stripe {
             }
         }
         let path = format!("/{path}");
+        let financial =
+            Financial::from_terms(&params, parent.as_ref().and_then(|p| p.financial.as_ref()));
         let cancel = request.operation == "stripe.subscription.cancel";
         let method = if cancel {
             StripeMethod::Delete
@@ -270,18 +390,26 @@ impl Adapter for Stripe {
             ..Observation::fact(State::Unknown)
         };
         match tokio::time::timeout(self.timeout, future).await {
-            Ok(Ok(reply)) => Ok(decode(reply)
-                .and_then(|reply| Self::reduce(reply, resource, expected))
-                .unwrap_or_else(|_| uncertain())),
+            Ok(Ok(reply)) => {
+                let mut observation = Self::project(reply, resource, expected, financial.as_ref());
+                if observation.continuation.is_none() {
+                    observation.continuation = uncertain().continuation;
+                }
+                Ok(observation)
+            }
             // A transport/server/decoding error cannot prove that nothing happened.
             _ => Ok(uncertain()),
         }
     }
     async fn observe(
         &self,
-        _operation: &str,
+        request: &Dispatch<'_>,
         continuation: Option<&Private>,
     ) -> Result<Observation> {
+        request.check(&self.id, self.mode)?;
+        if request.kind != Action::Observe {
+            return Err(Error::Invalid);
+        }
         let Some(continuation) = continuation else {
             return Ok(Observation::fact(State::Unknown));
         };
@@ -296,8 +424,18 @@ impl Adapter for Stripe {
         )
         .await
         {
-            Ok(Ok(reply)) => decode(reply)
-                .and_then(|reply| Self::reduce(reply, &reference.resource, Some(&reference.id))),
+            Ok(Ok(reply)) => {
+                let mut observation = Self::project(
+                    reply,
+                    &reference.resource,
+                    Some(&reference.id),
+                    reference.financial.as_ref(),
+                );
+                if observation.continuation.is_none() {
+                    observation.continuation = Some(Private::new(continuation.expose().to_vec()));
+                }
+                Ok(observation)
+            }
             _ => Ok(Observation {
                 continuation: Some(Private::new(continuation.expose().to_vec())),
                 ..Observation::fact(State::Unknown)

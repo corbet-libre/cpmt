@@ -26,7 +26,7 @@ fn providers() -> Vec<Provider> {
     ]
 }
 fn adapter(provider: Provider) -> Rest {
-    Rest::new(
+    configured(
         "fixture".into(),
         provider,
         Private::new(b"fixture-secret".to_vec()),
@@ -86,6 +86,7 @@ fn wrap(provider: &Provider, resource: &str, value: Value) -> Value {
 }
 fn instruction(operation: &str, terms: Value) -> Instruction {
     Instruction {
+        kind: Action::Execute,
         id: [1; 32],
         parent: None,
         adapter: "fixture".into(),
@@ -144,7 +145,7 @@ fn http(value: Value) -> String {
     )
 }
 fn local(provider: Provider, base: Url) -> Rest {
-    Rest::build(
+    build(
         "fixture".into(),
         provider,
         Private::new(b"fixture-secret".to_vec()),
@@ -455,7 +456,7 @@ fn constructors_validate_secrets_endpoints_limits_and_api_versions() {
         "https://example.test/#fragment",
     ] {
         assert!(
-            Rest::new(
+            configured(
                 "id".into(),
                 Provider::Btcpay {
                     base: base.into(),
@@ -477,7 +478,7 @@ fn constructors_validate_secrets_endpoints_limits_and_api_versions() {
     );
     for secret in [vec![], vec![255], b"key\r\nx: leak".to_vec()] {
         assert!(
-            Rest::new(
+            configured(
                 "id".into(),
                 Provider::Mollie { test_mode: None },
                 Private::new(secret),
@@ -501,7 +502,7 @@ fn constructors_validate_secrets_endpoints_limits_and_api_versions() {
         },
     ] {
         assert!(
-            Rest::new(
+            configured(
                 "id".into(),
                 Provider::Mollie { test_mode: None },
                 Private::new(b"key".to_vec()),
@@ -511,7 +512,7 @@ fn constructors_validate_secrets_endpoints_limits_and_api_versions() {
         );
     }
     assert!(
-        Rest::new(
+        configured(
             "".into(),
             Provider::Mollie { test_mode: None },
             Private::new(b"key".to_vec()),
@@ -520,7 +521,7 @@ fn constructors_validate_secrets_endpoints_limits_and_api_versions() {
         .is_err()
     );
     assert!(
-        Rest::build(
+        build(
             "id".into(),
             Provider::Mollie { test_mode: None },
             Private::new(b"key".to_vec()),
@@ -530,7 +531,7 @@ fn constructors_validate_secrets_endpoints_limits_and_api_versions() {
         .is_err()
     );
     assert!(
-        Rest::build(
+        build(
             "id".into(),
             Provider::Mollie { test_mode: None },
             Private::new(b"key".to_vec()),
@@ -1002,4 +1003,51 @@ fn money_parsing_never_rounds_json_or_excess_decimal_precision() {
         .validate()
         .is_err()
     );
+}
+
+fn fixture_mode(provider: &Provider) -> Mode {
+    match provider {
+        Provider::Mollie {
+            test_mode: Some(true),
+        }
+        | Provider::GoCardless { sandbox: true }
+        | Provider::Square { sandbox: true, .. }
+        | Provider::CoinGate { sandbox: true } => Mode::Sandbox,
+        _ => Mode::Production,
+    }
+}
+fn configured(id: String, provider: Provider, credential: Private, limits: Limits) -> Result<Rest> {
+    let mode = fixture_mode(&provider);
+    Rest::new(id, provider, credential, limits, mode)
+}
+fn build(
+    id: String,
+    provider: Provider,
+    credential: Private,
+    limits: Limits,
+    fixture: Option<Url>,
+) -> Result<Rest> {
+    let mode = fixture_mode(&provider);
+    Rest::build(id, provider, credential, limits, fixture, mode)
+}
+impl Rest {
+    async fn execute(
+        &self,
+        request: &Instruction,
+        key: &str,
+        previous: Option<&Private>,
+    ) -> Result<Observation> {
+        let auth = Dispatch::new(request, crate::test_support::permit(request, self.mode), 0)?;
+        Adapter::execute(self, &auth, key, previous).await
+    }
+    async fn observe(&self, operation: &str, previous: Option<&Private>) -> Result<Observation> {
+        let mut request = instruction(operation, serde_json::json!({}));
+        request.kind = Action::Observe;
+        let auth = Dispatch::new(
+            &request,
+            crate::test_support::permit(&request, self.mode),
+            0,
+        )?;
+        Adapter::observe(self, &auth, previous).await
+    }
 }

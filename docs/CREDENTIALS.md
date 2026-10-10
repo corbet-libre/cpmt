@@ -87,6 +87,7 @@ let adapter = cpmt::stripe::Stripe::new(
     secret,
     configured_timeout,
     configured_input_limit,
+    configured_mode,
 )?;
 ```
 

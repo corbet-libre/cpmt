@@ -1,4 +1,6 @@
 //! Shared execution contract. Adapters own provider behavior; callers own policy.
+use crate::cost::{self, Dispatch, DispatchPermit, Mode, Price, Quote, Reservation};
+use crate::details::{Disclosure, ProviderReply};
 use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -17,6 +19,9 @@ use zeroize::{Zeroize, Zeroizing};
 /// Uniform errors never embed provider responses, addresses or identifiers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
+    /// Missing, stale, changed or insufficient cost authorization.
+    #[error("payment cost authorization rejected")]
+    Cost,
     /// Invalid trusted configuration or malformed input.
     #[error("invalid payment input")]
     Invalid,
@@ -79,6 +84,8 @@ impl fmt::Debug for Binding {
 
 /// Trusted instructions. New operations use namespaced identifiers, not a core enum.
 pub struct Instruction {
+    /// Whether this task changes provider state or reads an existing operation.
+    pub kind: Action,
     /// Random, unguessable operation identifier assigned once by the host.
     pub id: [u8; 32],
     /// Earlier operation in the same authenticated context, for capture/refund/etc.
@@ -95,6 +102,15 @@ pub struct Instruction {
     pub terms: Private,
     /// Transient member/provider evidence; never persisted by the executor.
     pub evidence: Private,
+}
+
+/// Provider interaction requested by the caller. Reads still need cost approval.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Action {
+    /// Explicitly execute the advertised operation once.
+    Execute,
+    /// Read the authenticated parent object; terms and evidence must be empty.
+    Observe,
 }
 impl fmt::Debug for Instruction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -143,6 +159,12 @@ pub struct Capabilities {
 
 /// Adapter-only result before reduction to an application-safe outcome.
 pub struct Observation {
+    /// The provider established the bound financial terms in full. Partial or
+    /// unproven amounts must leave this false, even when an object exists.
+    pub satisfies_terms: bool,
+    /// Actual service fee when authenticated provider evidence establishes it.
+    /// Absence is unknown, never zero. Payment principal is not a service fee.
+    pub actual_cost: Option<cost::Amount>,
     /// Verified external fact.
     pub state: State,
     /// Provider's exclusive validity bound, if the fact is time limited.
@@ -156,22 +178,29 @@ pub struct Observation {
     /// Sensitive instructions for this authenticated member only (such as 3DS).
     /// Never persisted or included in gate evidence.
     pub member_action: Option<Private>,
+    /// Complete available upstream responses, never journaled or used as proof.
+    pub upstream: Vec<ProviderReply>,
 }
 impl Observation {
     /// A minimal result without provider data.
     pub fn fact(state: State) -> Self {
         Self {
+            satisfies_terms: false,
+            actual_cost: None,
             state,
             valid_until: None,
             continuation: None,
             claim: None,
             member_action: None,
+            upstream: Vec::new(),
         }
     }
 }
 
 /// Adapter implementation is trusted code. Never construct one from member input.
 pub trait Adapter: Send + Sync {
+    /// Explicit configured execution environment; never inferred as free.
+    fn mode(&self) -> Mode;
     /// Explicit bound on combined terms/evidence bytes, checked before hashing.
     fn max_input_bytes(&self) -> usize;
     /// Enumerate exactly the implemented operations of this configured adapter.
@@ -180,31 +209,39 @@ pub trait Adapter: Send + Sync {
     /// must be Unknown. Parent references stay inside the payment boundary.
     fn execute(
         &self,
-        request: &Instruction,
+        request: &Dispatch<'_>,
         key: &str,
         previous: Option<&Private>,
     ) -> impl Future<Output = Result<Observation>> + Send;
     /// Reconcile without initiating another charge.
     fn observe(
         &self,
-        operation: &str,
+        request: &Dispatch<'_>,
         continuation: Option<&Private>,
     ) -> impl Future<Output = Result<Observation>> + Send;
 }
 
 type Pending<'a> = Pin<Box<dyn Future<Output = Result<Observation>> + Send + 'a>>;
 trait ErasedAdapter: Send + Sync {
+    fn mode(&self) -> Mode;
     fn max_input_bytes(&self) -> usize;
     fn capabilities(&self) -> Capabilities;
     fn execute<'a>(
         &'a self,
-        request: &'a Instruction,
+        request: &'a Dispatch<'a>,
         key: &'a str,
         previous: Option<&'a Private>,
     ) -> Pending<'a>;
-    fn observe<'a>(&'a self, operation: &'a str, continuation: Option<&'a Private>) -> Pending<'a>;
+    fn observe<'a>(
+        &'a self,
+        request: &'a Dispatch<'a>,
+        continuation: Option<&'a Private>,
+    ) -> Pending<'a>;
 }
 impl<A: Adapter> ErasedAdapter for A {
+    fn mode(&self) -> Mode {
+        Adapter::mode(self)
+    }
     fn max_input_bytes(&self) -> usize {
         Adapter::max_input_bytes(self)
     }
@@ -213,14 +250,18 @@ impl<A: Adapter> ErasedAdapter for A {
     }
     fn execute<'a>(
         &'a self,
-        request: &'a Instruction,
+        request: &'a Dispatch<'a>,
         key: &'a str,
         previous: Option<&'a Private>,
     ) -> Pending<'a> {
         Box::pin(Adapter::execute(self, request, key, previous))
     }
-    fn observe<'a>(&'a self, operation: &'a str, continuation: Option<&'a Private>) -> Pending<'a> {
-        Box::pin(Adapter::observe(self, operation, continuation))
+    fn observe<'a>(
+        &'a self,
+        request: &'a Dispatch<'a>,
+        continuation: Option<&'a Private>,
+    ) -> Pending<'a> {
+        Box::pin(Adapter::observe(self, request, continuation))
     }
 }
 
@@ -230,6 +271,9 @@ pub struct Outcome(Snapshot);
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Snapshot {
+    request_digest: [u8; 32],
+    satisfies_terms: bool,
+    sandbox: bool,
     id: [u8; 32],
     adapter: String,
     operation: String,
@@ -246,6 +290,20 @@ impl fmt::Debug for Outcome {
     }
 }
 impl Outcome {
+    /// The environment that established this fact. Sandbox facts are not proofs.
+    pub fn mode(&self) -> Mode {
+        if self.0.sandbox {
+            Mode::Sandbox
+        } else {
+            Mode::Production
+        }
+    }
+    pub(crate) fn matches_request(&self, request: &Instruction, digest: [u8; 32]) -> bool {
+        self.0.satisfies_terms
+            && self.0.request_digest == digest
+            && self.0.id == request.id
+            && self.0.binding == request.binding
+    }
     /// Current external state, without any implicit commercial interpretation.
     pub fn state(&self) -> State {
         self.0.state
@@ -267,7 +325,8 @@ impl Outcome {
         now: u64,
         until: u64,
     ) -> Result<Evidence> {
-        if &self.0.binding != binding
+        if self.0.sandbox
+            || &self.0.binding != binding
             || self.0.state != state
             || matches!(
                 state,
@@ -315,15 +374,20 @@ impl Evidence {
 
 /// Execution result with a separate, nonserializable member-only handover.
 pub struct Execution {
+    /// Reserved fee exposure and any actual charge established by the adapter.
+    pub cost: Reservation,
     /// Minimal current payment fact for the caller.
     pub outcome: Outcome,
     /// Deliver only to the member authenticated by the original binding.
     pub member_action: Option<Private>,
+    /// Requested private responses; empty for minimal output or a journal replay.
+    pub upstream: Vec<ProviderReply>,
 }
 
 /// Minimal journal entry. Provider continuation remains inside the storage owner.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Record {
+    cost: Reservation,
     fingerprint: [u8; 32],
     owner: [u8; 32],
     outcome: Snapshot,
@@ -331,6 +395,15 @@ pub struct Record {
     pub(crate) revision: u64,
 }
 impl Record {
+    /// The host atomically reserves this fee with `begin`, under its configured
+    /// budget scope. Pending/unknown records retain maximum exposure on `replace`.
+    pub fn cost(&self) -> &Reservation {
+        &self.cost
+    }
+    /// Current state for the host's atomic exposure reconciliation.
+    pub fn state(&self) -> State {
+        self.outcome.state
+    }
     /// Keyed receipt and context identities for the journal's atomic reservation.
     /// Equal receipts may recur only under the same context. Neither is raw input.
     pub fn receipt(&self) -> Option<([u8; 32], [u8; 32])> {
@@ -354,14 +427,18 @@ impl fmt::Debug for Record {
     }
 }
 
-/// Atomic journal. Production implementations must survive process restarts.
-/// Key scope and raw records are private to the payment boundary. Never log them.
+/// Caller-owned atomic operational state. The library implements no persistence.
+/// Production hosts must preserve it across restarts. It receives only minimal
+/// operational records, never raw requests or upstream responses. Never log them.
 pub trait Journal: Send + Sync {
     /// Atomically bind the namespace to a stable key fingerprint; reject changes.
     fn bind(&self, key_id: &[u8; 32]) -> impl Future<Output = Result<()>> + Send;
     /// Load an existing entry without changing it.
     fn get(&self, key: &str) -> impl Future<Output = Result<Option<Record>>> + Send;
-    /// Insert if absent and return the existing entry on conflict, atomically.
+    /// Atomically reserve this operation AND its maximum fee under the host's
+    /// configured budget. Refuse insufficient exposure before inserting anything.
+    /// Return an existing operation without reserving twice. Production hosts
+    /// must preserve this transaction across crashes and concurrent callers.
     fn begin(
         &self,
         key: &str,
@@ -384,9 +461,20 @@ pub struct MemoryJournal(Arc<Mutex<MemoryState>>);
 
 #[derive(Default)]
 struct MemoryState {
+    budget: Option<cost::Amount>,
     key_id: Option<[u8; 32]>,
     records: BTreeMap<String, Record>,
     receipts: BTreeMap<[u8; 32], [u8; 32]>,
+}
+impl MemoryJournal {
+    /// Volatile budget accounting for fixtures or disposable single-process use.
+    /// Restart guarantees require a caller-owned durable state implementation.
+    pub fn with_budget(budget: cost::Amount) -> Self {
+        Self(Arc::new(Mutex::new(MemoryState {
+            budget: Some(budget),
+            ..MemoryState::default()
+        })))
+    }
 }
 impl Journal for MemoryJournal {
     async fn bind(&self, key_id: &[u8; 32]) -> Result<()> {
@@ -410,6 +498,28 @@ impl Journal for MemoryJournal {
         let mut state = self.0.lock().map_err(|_| Error::Storage)?;
         if let Some(record) = state.records.get(key) {
             return Ok(Some(record.clone()));
+        }
+        if let Some(budget) = &state.budget {
+            if record.cost.unit != budget.unit.code || record.cost.scale != budget.unit.scale {
+                return Err(Error::Cost);
+            }
+            let exposure = state
+                .records
+                .values()
+                .try_fold(record.cost.maximum, |total, r| {
+                    let charge = if matches!(
+                        r.outcome.state,
+                        State::Unknown | State::Pending | State::RequiresAction
+                    ) {
+                        r.cost.maximum
+                    } else {
+                        r.cost.actual.unwrap_or(r.cost.maximum)
+                    };
+                    total.checked_add(charge).ok_or(Error::Cost)
+                })?;
+            if exposure > budget.atoms {
+                return Err(Error::Cost);
+            }
         }
         state.records.insert(key.into(), record.clone());
         Ok(None)
@@ -474,13 +584,28 @@ impl<J: Journal> Payments<J> {
     pub fn capabilities(&self) -> Vec<Capabilities> {
         self.adapters.values().map(|a| a.capabilities()).collect()
     }
-    /// Execute at most once per operation ID, even across concurrent calls/restarts.
-    /// Lost/uncertain outcomes require `observe`, never a second execution.
-    pub async fn execute(&self, request: &Instruction, now: u64) -> Result<Execution> {
+    /// Construct an inert preview from a trusted quote or configured tariff.
+    /// No pricing or provider endpoint is called. Unknown prices remain unknown.
+    pub fn preview(
+        &self,
+        request: &Instruction,
+        price: Price,
+        source: String,
+        valid_until: u64,
+    ) -> Result<Quote> {
         let adapter = self
             .adapters
             .get(&request.adapter)
             .ok_or(Error::Unsupported)?;
+        self.validate_request(request, adapter.as_ref())?;
+        Ok(Quote {
+            price,
+            source,
+            valid_until: valid_until.min(request.expires_at),
+            binding: cost::binding(request, adapter.mode()),
+        })
+    }
+    fn validate_request(&self, request: &Instruction, adapter: &dyn ErasedAdapter) -> Result<()> {
         if !adapter
             .capabilities()
             .operations
@@ -501,32 +626,60 @@ impl<J: Journal> Payments<J> {
         if request.id == [0; 32] || request.expires_at == 0 {
             return Err(Error::Invalid);
         }
-        if now >= request.expires_at {
-            return Err(Error::Expired);
+        if request.kind == Action::Observe
+            && (request.parent.is_none()
+                || !request.terms.expose().is_empty()
+                || !request.evidence.expose().is_empty())
+        {
+            return Err(Error::Invalid);
         }
+        Ok(())
+    }
+    /// Execute at most once per operation ID, even across concurrent calls/restarts.
+    /// Lost/uncertain outcomes require `observe`, never a second execution.
+    pub async fn dispatch(
+        &self,
+        request: &Instruction,
+        permit: DispatchPermit<String>,
+        now: u64,
+    ) -> Result<Execution> {
+        self.dispatch_with_output(request, permit, now, Disclosure::Minimal)
+            .await
+    }
+    /// Execute with explicit transient disclosure. A replay cannot reconstruct
+    /// discarded provider data and returns only the caller's retained snapshot.
+    pub async fn dispatch_with_output(
+        &self,
+        request: &Instruction,
+        permit: DispatchPermit<String>,
+        now: u64,
+        disclosure: Disclosure,
+    ) -> Result<Execution> {
+        let adapter = self
+            .adapters
+            .get(&request.adapter)
+            .ok_or(Error::Unsupported)?;
+        self.validate_request(request, adapter.as_ref())?;
+        cost::validate(
+            request,
+            &adapter.capabilities().id,
+            adapter.mode(),
+            &permit,
+            now,
+        )?;
         let key = self.operation_key(&request.binding, &request.id).await?;
-        // The journal retains a keyed digest, never the raw terms or member evidence.
-        let bytes = Zeroizing::new(
-            serde_json::to_vec(&(
-                "cpmt.instruction.v2",
-                &request.adapter,
-                &request.operation,
-                &request.binding,
-                request.parent,
-                request.expires_at,
-                request.terms.expose(),
-                request.evidence.expose(),
-            ))
-            .expect("fixed payment fields serialize to JSON"),
-        );
-        let fingerprint = self.mac(&bytes);
+        let fingerprint = self.instruction_digest(request, adapter.mode());
         let initial = Record {
+            cost: Reservation::from_permit(&permit)?,
             fingerprint,
             owner: self.mac(
                 &serde_json::to_vec(&("cpmt.owner.v2", &request.binding))
                     .expect("fixed payment fields serialize to JSON"),
             ),
             outcome: Snapshot {
+                request_digest: fingerprint,
+                satisfies_terms: false,
+                sandbox: adapter.mode() == Mode::Sandbox,
                 id: request.id,
                 adapter: request.adapter.clone(),
                 operation: request.operation.clone(),
@@ -543,14 +696,21 @@ impl<J: Journal> Payments<J> {
                 return Err(Error::Conflict);
             }
             return Ok(Execution {
+                cost: previous.cost.clone(),
                 outcome: Outcome(previous.outcome.clone()),
                 member_action: None,
+                upstream: Vec::new(),
             });
         }
         let parent = if let Some(id) = &request.parent {
             let parent_key = self.operation_key(&request.binding, id).await?;
             let record = self.load(&parent_key, &request.binding).await?;
-            if record.outcome.adapter != request.adapter || id == &request.id {
+            if record.outcome.adapter != request.adapter
+                || id == &request.id
+                || record.outcome.sandbox != (adapter.mode() == Mode::Sandbox)
+                || (request.kind == Action::Observe
+                    && record.outcome.operation != request.operation)
+            {
                 return Err(Error::Rejected);
             }
             Some(Private::new(
@@ -560,25 +720,41 @@ impl<J: Journal> Payments<J> {
             None
         };
         // Cancellation, a crash, or an adapter error leaves the uncertain marker.
-        let observation = adapter.execute(request, &key, parent.as_ref()).await?;
-        self.finish(&key, initial, observation).await
+        let authorized = Dispatch::new(request, permit, now)?;
+        let observation = match request.kind {
+            Action::Execute => adapter.execute(&authorized, &key, parent.as_ref()).await?,
+            Action::Observe => adapter.observe(&authorized, parent.as_ref()).await?,
+        };
+        self.finish(&key, initial, observation, disclosure).await
     }
-    /// Reconcile using only the authenticated binding and operation ID.
-    /// Original terms and raw member evidence can be discarded after execution.
-    pub async fn observe(&self, id: &[u8; 32], binding: &Binding) -> Result<Execution> {
+    /// Prepare a separately costed read of an authenticated parent operation.
+    /// This performs no provider I/O. Execute the returned instruction with a new
+    /// quote/permit; its fresh ID reserves observation fees exactly once.
+    pub async fn observation(
+        &self,
+        id: &[u8; 32],
+        binding: &Binding,
+        read_id: [u8; 32],
+        expires_at: u64,
+    ) -> Result<Instruction> {
         let key = self.operation_key(binding, id).await?;
         let previous = self.load(&key, binding).await?;
-        let adapter = self
-            .adapters
-            .get(&previous.outcome.adapter)
-            .ok_or(Error::Unsupported)?;
         // No reference means no read-only reconciliation is possible. In
         // particular, a poll must not revise the marker of an in-flight dispatch.
-        let continuation = Private::new(previous.continuation.clone().ok_or(Error::Unsupported)?);
-        let observation = adapter
-            .observe(&previous.outcome.operation, Some(&continuation))
-            .await?;
-        self.finish(&key, previous, observation).await
+        if previous.continuation.is_none() {
+            return Err(Error::Unsupported);
+        }
+        Ok(Instruction {
+            kind: Action::Observe,
+            id: read_id,
+            parent: Some(*id),
+            adapter: previous.outcome.adapter.clone(),
+            operation: previous.outcome.operation.clone(),
+            binding: binding.clone(),
+            expires_at,
+            terms: Private::new(Vec::new()),
+            evidence: Private::new(Vec::new()),
+        })
     }
     /// Retrieve the latest journaled fact, with no network call or raw provider data.
     pub async fn outcome(&self, id: &[u8; 32], binding: &Binding) -> Result<Outcome> {
@@ -624,11 +800,14 @@ impl<J: Journal> Payments<J> {
         key: &str,
         mut record: Record,
         observation: Observation,
+        disclosure: Disclosure,
     ) -> Result<Execution> {
         let revision = record.revision;
         record.revision = revision.checked_add(1).ok_or(Error::Storage)?;
         record.outcome.state = observation.state;
         record.outcome.valid_until = observation.valid_until;
+        record.outcome.satisfies_terms = observation.satisfies_terms;
+        record.cost.report(observation.actual_cost.as_ref())?;
         // Every observation explicitly supplies what is still needed. None erases it.
         if let Some(mut bytes) = record.continuation.take() {
             bytes.zeroize();
@@ -643,9 +822,33 @@ impl<J: Journal> Payments<J> {
         });
         self.journal.replace(key, revision, &record).await?;
         Ok(Execution {
+            cost: record.cost.clone(),
             outcome: Outcome(record.outcome.clone()),
             member_action: observation.member_action,
+            upstream: match disclosure {
+                Disclosure::Minimal => Vec::new(),
+                Disclosure::Complete => observation.upstream,
+            },
         })
+    }
+    pub(crate) fn instruction_digest(&self, request: &Instruction, mode: Mode) -> [u8; 32] {
+        // The journal retains a keyed digest, never the raw terms or member evidence.
+        let bytes = Zeroizing::new(
+            serde_json::to_vec(&(
+                "cpmt.instruction.v2",
+                request.kind,
+                mode == Mode::Sandbox,
+                &request.adapter,
+                &request.operation,
+                &request.binding,
+                request.parent,
+                request.expires_at,
+                request.terms.expose(),
+                request.evidence.expose(),
+            ))
+            .expect("fixed payment fields serialize to JSON"),
+        );
+        self.mac(&bytes)
     }
     fn mac(&self, bytes: &[u8]) -> [u8; 32] {
         let mut mac = Hmac::<Sha256>::new_from_slice(self.key.as_ref())
@@ -671,4 +874,4 @@ fn validate_binding(binding: &Binding) -> Result<()> {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "tests/payments.rs"]
-mod tests;
+pub(crate) mod tests;

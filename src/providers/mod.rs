@@ -1,5 +1,7 @@
 //! Optional provider adapters using bounded, single-dispatch HTTPS requests.
 //! See `docs/PROVIDERS.md` for operations, native terms and reconciliation limits.
+use crate::cost::{Dispatch, Mode};
+use crate::details::ProviderReply;
 use crate::payments::*;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use reqwest::{
@@ -63,6 +65,7 @@ pub struct Limits {
 /// One explicitly configured provider/account. No automatic fallback or retry.
 /// Credentials, raw responses and input are never exposed through Debug/errors.
 pub struct Rest {
+    mode: Mode,
     id: String,
     provider: Provider,
     base: Url,
@@ -102,8 +105,9 @@ impl Rest {
         provider: Provider,
         credential: Private,
         limits: Limits,
+        mode: Mode,
     ) -> Result<Self> {
-        Self::build(id, provider, credential, limits, None)
+        Self::build(id, provider, credential, limits, None, mode)
     }
     fn build(
         id: String,
@@ -111,8 +115,22 @@ impl Rest {
         credential: Private,
         limits: Limits,
         fixture: Option<Url>,
+        mode: Mode,
     ) -> Result<Self> {
         crate::payments::identifier(&id)?;
+        if mode == Mode::Simulation {
+            return Err(Error::Invalid);
+        }
+        let sandbox = match &provider {
+            Provider::Square { sandbox, .. }
+            | Provider::GoCardless { sandbox }
+            | Provider::CoinGate { sandbox } => Some(*sandbox),
+            Provider::Mollie { test_mode } => *test_mode,
+            Provider::Btcpay { .. } => None,
+        };
+        if sandbox.is_some_and(|sandbox| sandbox != (mode == Mode::Sandbox)) {
+            return Err(Error::Invalid);
+        }
         let (endpoint, prefix) = provider.endpoint()?;
         let local = fixture.is_some();
         let mut base = fixture.unwrap_or(endpoint);
@@ -161,6 +179,7 @@ impl Rest {
             .build()
             .map_err(http_error)?;
         Ok(Self {
+            mode,
             id,
             provider,
             base,
@@ -174,7 +193,7 @@ impl Rest {
         path: &str,
         body: Option<&Value>,
         key: Option<&str>,
-    ) -> Result<Value> {
+    ) -> Result<ProviderReply> {
         let url = self.base.join(path).map_err(|_| Error::Invalid)?;
         let read = method == Method::GET;
         let mut request = self.client.request(method, url);
@@ -192,10 +211,10 @@ impl Rest {
             request = request.header("idempotency-key", key);
         }
         let mut response = request.send().await.map_err(http_error)?;
-        if !response.status().is_success()
-            || response
-                .content_length()
-                .is_some_and(|n| n > self.limits.response_bytes as u64)
+        let status = response.status().as_u16();
+        if response
+            .content_length()
+            .is_some_and(|n| n > self.limits.response_bytes as u64)
         {
             return Err(Error::Rejected);
         }
@@ -206,7 +225,11 @@ impl Rest {
             }
             bytes.extend_from_slice(&chunk);
         }
-        serde_json::from_slice(&bytes).map_err(|_| Error::Rejected)
+        Ok(ProviderReply {
+            phase: "response",
+            http_status: Some(status),
+            payload: Private::new(bytes.to_vec()),
+        })
     }
     fn reduce(&self, reply: Value, prepared: &Prepared) -> Result<Observation> {
         let object = self.provider.object(&reply, prepared.resource)?;
@@ -269,15 +292,37 @@ impl Rest {
             .action(object)
             .map(|action| Private::new(serde_json::to_vec(action).expect("JSON serializes")));
         Ok(Observation {
+            satisfies_terms: true,
+            actual_cost: None,
             state,
             valid_until,
             continuation: Some(continuation),
             claim: Some(claim),
             member_action,
+            upstream: Vec::new(),
         })
+    }
+
+    fn project(&self, response: ProviderReply, prepared: &Prepared) -> Observation {
+        let mut result = if response
+            .http_status
+            .is_some_and(|code| (200..300).contains(&code))
+        {
+            serde_json::from_slice(response.payload.expose())
+                .map_err(|_| Error::Rejected)
+                .and_then(|reply| self.reduce(reply, prepared))
+                .unwrap_or_else(|_| Observation::fact(State::Unknown))
+        } else {
+            Observation::fact(State::Unknown)
+        };
+        result.upstream.push(response);
+        result
     }
 }
 impl Adapter for Rest {
+    fn mode(&self) -> Mode {
+        self.mode
+    }
     fn max_input_bytes(&self) -> usize {
         self.limits.input_bytes
     }
@@ -294,10 +339,14 @@ impl Adapter for Rest {
     }
     async fn execute(
         &self,
-        request: &Instruction,
+        request: &Dispatch<'_>,
         key: &str,
         previous: Option<&Private>,
     ) -> Result<Observation> {
+        request.check(&self.id, self.mode)?;
+        if request.kind != Action::Execute {
+            return Err(Error::Invalid);
+        }
         if request
             .terms
             .expose()
@@ -335,31 +384,42 @@ impl Adapter for Rest {
             )
             .with_subscriber(tracing::subscriber::NoSubscriber::default())
             .await;
-        Ok(response
-            .and_then(|reply| self.reduce(reply, &prepared))
-            .unwrap_or_else(|_| {
-                uncertain(
-                    parent
-                        .as_ref()
-                        .filter(|p| Some(&p.id) == prepared.expected.as_ref()),
-                )
-            }))
+        let mut result = response.map_or_else(
+            |_| Observation::fact(State::Unknown),
+            |reply| self.project(reply, &prepared),
+        );
+        if result.continuation.is_none() {
+            result.continuation = parent
+                .as_ref()
+                .filter(|p| Some(&p.id) == prepared.expected.as_ref())
+                .map(encode);
+        }
+        Ok(result)
     }
     async fn observe(
         &self,
-        operation: &str,
+        request: &Dispatch<'_>,
         continuation: Option<&Private>,
     ) -> Result<Observation> {
-        self.provider.operation(operation)?;
+        request.check(&self.id, self.mode)?;
+        if request.kind != Action::Observe {
+            return Err(Error::Invalid);
+        }
+        self.provider.operation(&request.operation)?;
         let reference = decode(continuation.ok_or(Error::Unsupported)?)?;
         let prepared = self.provider.read(&reference)?;
         let reply = self
             .send(Method::GET, &prepared.path, None, None)
             .with_subscriber(tracing::subscriber::NoSubscriber::default())
             .await;
-        Ok(reply
-            .and_then(|reply| self.reduce(reply, &prepared))
-            .unwrap_or_else(|_| uncertain(Some(&reference))))
+        let mut result = reply.map_or_else(
+            |_| Observation::fact(State::Unknown),
+            |reply| self.project(reply, &prepared),
+        );
+        if result.continuation.is_none() {
+            result.continuation = Some(encode(&reference));
+        }
+        Ok(result)
     }
 }
 fn http_error(_: reqwest::Error) -> Error {

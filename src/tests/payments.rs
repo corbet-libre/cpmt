@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub(crate) fn request() -> Instruction {
     Instruction {
+        kind: Action::Execute,
         id: [1; 32],
         parent: None,
         adapter: "test".into(),
@@ -18,11 +19,15 @@ pub(crate) fn request() -> Instruction {
     }
 }
 
-struct Provider {
+pub(crate) struct Provider {
+    fee: Option<cost::Amount>,
     calls: AtomicUsize,
     error: bool,
 }
 impl Adapter for Provider {
+    fn mode(&self) -> Mode {
+        Mode::Production
+    }
     fn max_input_bytes(&self) -> usize {
         16384
     }
@@ -34,7 +39,7 @@ impl Adapter for Provider {
     }
     async fn execute(
         &self,
-        request: &Instruction,
+        request: &Dispatch<'_>,
         key: &str,
         previous: Option<&Private>,
     ) -> Result<Observation> {
@@ -47,14 +52,25 @@ impl Adapter for Provider {
             assert_eq!(previous.unwrap().expose(), b"provider-reference");
         }
         Ok(Observation {
+            satisfies_terms: true,
+            actual_cost: self.fee.clone(),
             state: State::Collected,
             valid_until: Some(50),
             continuation: Some(Private::new(b"provider-reference".to_vec())),
             claim: Some(Private::new(b"test:receipt".to_vec())),
             member_action: Some(Private::new(b"member-only".to_vec())),
+            upstream: vec![ProviderReply {
+                phase: "response",
+                http_status: Some(200),
+                payload: Private::new(b"full-private-provider-result".to_vec()),
+            }],
         })
     }
-    async fn observe(&self, _: &str, continuation: Option<&Private>) -> Result<Observation> {
+    async fn observe(
+        &self,
+        _: &Dispatch<'_>,
+        continuation: Option<&Private>,
+    ) -> Result<Observation> {
         Ok(Observation::fact(if continuation.is_some() {
             State::Refunded
         } else {
@@ -63,9 +79,13 @@ impl Adapter for Provider {
     }
 }
 
-fn setup(journal: MemoryJournal, error: bool) -> (Payments<MemoryJournal>, Arc<Provider>) {
+pub(crate) fn setup(
+    journal: MemoryJournal,
+    error: bool,
+) -> (Payments<MemoryJournal>, Arc<Provider>) {
     let mut payments = Payments::new(journal, [7; 32]).unwrap();
     let provider = Arc::new(Provider {
+        fee: None,
         calls: AtomicUsize::new(0),
         error,
     });
@@ -430,6 +450,9 @@ struct SlowProvider {
     release: tokio::sync::Notify,
 }
 impl Adapter for SlowProvider {
+    fn mode(&self) -> Mode {
+        Mode::Production
+    }
     fn max_input_bytes(&self) -> usize {
         16384
     }
@@ -439,7 +462,7 @@ impl Adapter for SlowProvider {
             operations: vec!["collect".into()],
         }
     }
-    async fn execute(&self, _: &Instruction, _: &str, _: Option<&Private>) -> Result<Observation> {
+    async fn execute(&self, _: &Dispatch<'_>, _: &str, _: Option<&Private>) -> Result<Observation> {
         self.started.notify_one();
         self.release.notified().await;
         Ok(Observation {
@@ -448,7 +471,7 @@ impl Adapter for SlowProvider {
             ..Observation::fact(State::Collected)
         })
     }
-    async fn observe(&self, _: &str, _: Option<&Private>) -> Result<Observation> {
+    async fn observe(&self, _: &Dispatch<'_>, _: Option<&Private>) -> Result<Observation> {
         Ok(Observation::fact(State::Unknown))
     }
 }
@@ -505,6 +528,7 @@ async fn changing_the_binding_key_cannot_rearm_a_payment_id() {
     payments.execute(&request(), 1).await.unwrap();
     let mut reopened = Payments::new(journal, [8; 32]).unwrap();
     let provider = Arc::new(Provider {
+        fee: None,
         calls: AtomicUsize::new(0),
         error: false,
     });
@@ -518,16 +542,19 @@ async fn changing_the_binding_key_cannot_rearm_a_payment_id() {
 
 struct Configured(Capabilities);
 impl Adapter for Configured {
+    fn mode(&self) -> Mode {
+        Mode::Production
+    }
     fn max_input_bytes(&self) -> usize {
         if self.0.id == "unbounded" { 0 } else { 16384 }
     }
     fn capabilities(&self) -> Capabilities {
         self.0.clone()
     }
-    async fn execute(&self, _: &Instruction, _: &str, _: Option<&Private>) -> Result<Observation> {
+    async fn execute(&self, _: &Dispatch<'_>, _: &str, _: Option<&Private>) -> Result<Observation> {
         Err(Error::Unsupported)
     }
-    async fn observe(&self, _: &str, _: Option<&Private>) -> Result<Observation> {
+    async fn observe(&self, _: &Dispatch<'_>, _: Option<&Private>) -> Result<Observation> {
         Err(Error::Unsupported)
     }
 }
@@ -683,4 +710,209 @@ async fn polling_or_forgetting_an_inflight_payment_cannot_discard_its_provider_r
             .continuation
             .is_some()
     );
+}
+
+fn priced(request: &Instruction, mode: Mode, atoms: u64) -> DispatchPermit<String> {
+    let amount = cost::Amount {
+        unit: cost::Unit {
+            code: "fee".into(),
+            scale: 2,
+        },
+        atoms,
+    };
+    cost::Plan::new(
+        vec![cost::Offer {
+            candidate: cfbk::Candidate::new(request.adapter.clone(), [request.operation.clone()]),
+            quote: Quote {
+                price: Price::AtMost(amount.clone()),
+                source: "fixture tariff v1".into(),
+                valid_until: 99,
+                binding: cost::binding(request, mode),
+            },
+        }],
+        cfbk::Config::new([request.adapter.clone()], [request.operation.clone()]),
+        cost::CostOrder::Configured,
+        amount,
+        1,
+        mode,
+        0,
+    )
+    .unwrap()
+    .start()
+    .begin(0)
+    .unwrap()
+}
+
+#[tokio::test]
+async fn rich_private_results_are_opt_in_and_never_enter_caller_state() {
+    let journal = MemoryJournal::default();
+    let (payments, _) = setup(journal.clone(), false);
+    let mut request = request();
+    let ordinary = payments.execute(&request, 1).await.unwrap();
+    assert!(ordinary.upstream.is_empty());
+    request.id = [44; 32];
+    let full = payments
+        .dispatch_with_output(
+            &request,
+            priced(&request, Mode::Production, 2),
+            1,
+            Disclosure::Complete,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        full.upstream[0].payload.expose(),
+        b"full-private-provider-result"
+    );
+    assert!(!format!("{:?}", full.upstream).contains("private-provider"));
+    let stored = journal.0.lock().unwrap();
+    for record in stored.records.values() {
+        let json = serde_json::to_string(record).unwrap();
+        assert!(!json.contains("full-private-provider"));
+        assert!(!json.contains("member-only"));
+    }
+    drop(stored);
+    let replay = payments
+        .dispatch_with_output(
+            &request,
+            priced(&request, Mode::Production, 2),
+            1,
+            Disclosure::Complete,
+        )
+        .await
+        .unwrap();
+    assert!(replay.upstream.is_empty());
+}
+
+#[tokio::test]
+async fn changed_terms_modes_candidates_and_expired_quotes_cannot_dispatch() {
+    let (payments, provider) = setup(MemoryJournal::default(), false);
+    let mut request = request();
+    let old = priced(&request, Mode::Production, 2);
+    request.terms = Private::new(b"changed".to_vec());
+    assert!(matches!(
+        payments.dispatch(&request, old, 1).await,
+        Err(Error::Cost)
+    ));
+    for mode in [Mode::Simulation, Mode::Sandbox] {
+        assert!(matches!(
+            payments
+                .dispatch(&request, priced(&request, mode, 2), 1)
+                .await,
+            Err(Error::Cost)
+        ));
+    }
+    assert!(matches!(
+        payments
+            .dispatch(&request, priced(&request, Mode::Production, 2), 99)
+            .await,
+        Err(Error::Cost)
+    ));
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+    let quote = payments
+        .preview(&request, Price::Unknown, "no tariff".into(), 1000)
+        .unwrap();
+    assert_eq!(quote.price, Price::Unknown);
+    assert_eq!(quote.valid_until, request.expires_at);
+    let permit = priced(&request, Mode::Production, 2);
+    assert!(cost::validate(&request, "different-account", Mode::Production, &permit, 1).is_err());
+    request.kind = Action::Observe;
+    assert!(
+        payments
+            .preview(&request, Price::Unknown, "source".into(), 99)
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn atomic_caller_budget_reservation_survives_concurrency_and_retries() {
+    let amount = cost::Amount {
+        unit: cost::Unit {
+            code: "fee".into(),
+            scale: 2,
+        },
+        atoms: 10,
+    };
+    let journal = MemoryJournal::with_budget(amount);
+    let (payments, provider) = setup(journal.clone(), false);
+    let first = request();
+    let mut second = request();
+    second.id = [2; 32];
+    let (a, b) = tokio::join!(
+        payments.dispatch(&first, priced(&first, Mode::Production, 7), 1),
+        payments.dispatch(&second, priced(&second, Mode::Production, 7), 1)
+    );
+    assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    let winner = if a.is_ok() { first } else { second };
+    let again = payments
+        .dispatch(&winner, priced(&winner, Mode::Production, 7), 2)
+        .await
+        .unwrap();
+    assert_eq!(again.cost.maximum, 7);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    let record = journal
+        .0
+        .lock()
+        .unwrap()
+        .records
+        .values()
+        .next()
+        .unwrap()
+        .clone();
+    assert_eq!(record.cost().maximum, 7);
+    assert_eq!(record.state(), State::Collected);
+    let mut read = payments
+        .observation(&winner.id, &winner.binding, [3; 32], 100)
+        .await
+        .unwrap();
+    assert!(matches!(
+        payments
+            .dispatch(&read, priced(&read, Mode::Production, 7), 1)
+            .await,
+        Err(Error::Cost)
+    ));
+    read.id = [4; 32];
+    assert!(matches!(
+        payments
+            .dispatch(
+                &read,
+                crate::test_support::permit(&read, Mode::Production),
+                1
+            )
+            .await,
+        Err(Error::Cost)
+    ));
+}
+
+#[test]
+fn actual_cost_never_exceeds_reserved_units_and_fallback_keeps_uncertainty() {
+    let request = request();
+    let mut reserved = Reservation::from_permit(&priced(&request, Mode::Production, 7)).unwrap();
+    let mut actual = cost::Amount {
+        unit: cost::Unit {
+            code: "fee".into(),
+            scale: 2,
+        },
+        atoms: 6,
+    };
+    reserved.report(Some(&actual)).unwrap();
+    assert_eq!(reserved.actual, Some(6));
+    actual.atoms = 8;
+    assert!(reserved.report(Some(&actual)).is_err());
+    actual.atoms = 1;
+    actual.unit.scale = 0;
+    assert!(reserved.report(Some(&actual)).is_err());
+    actual.unit.scale = 2;
+    actual.unit.code = "other".into();
+    assert!(reserved.report(Some(&actual)).is_err());
+    for (state, resolution) in [
+        (State::Unknown, cost::Outcome::Uncertain),
+        (State::Pending, cost::Outcome::Pending),
+        (State::RequiresAction, cost::Outcome::Pending),
+        (State::Failed, cost::Outcome::Refused),
+        (State::Collected, cost::Outcome::Success),
+    ] {
+        assert_eq!(cost::fallback(state), resolution);
+    }
 }

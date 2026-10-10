@@ -1,55 +1,50 @@
 # cpmt
 
-Payment execution adapters and minimal gate evidence. `crpt` uses this same
-contract for crypto payments. Callers choose providers, amounts, currencies,
-recurrence, holds, capture, release, refunds and eligibility policy. The library
-executes the requested operation and reports a fact; it owns no member balances,
-wallets or transfers between members.
+Reusable payment expertise over maintained provider integrations. Callers choose
+financial terms, providers and the meaning of a result. `crpt` shares this
+contract. There is no custody, wallet key, account ledger or member-to-member
+transfer.
 
-`payments::Adapter` declares operations by name. `Payments` registers trusted
-adapters, journals an attempt before dispatch, and uses a stable idempotency key.
-A repeated operation never dispatches again. Changed instructions under the same
-ID fail. Uncertain results stay `Unknown` and must be reconciled, never interpreted
-as permission to charge again. Follow-up operations reference a journaled parent
-in the same authenticated member/service/action context.
+`Payments::preview` binds an explicit provider quote or configured tariff to the
+account instance, mode and exact instruction. Local planning never calls a
+provider. The shared `cfbk::cost::Plan` checks capabilities and the whole-cascade
+budget and creates a move-only permit. `Payments::dispatch` requires that permit;
+there is no uncosted execution path. Payment principal is separate from fees.
+Unknown fees never mean free. Installing an adapter enables no account or offer.
 
-| Feature | Implementation |
-|---|---|
-| Core (default) | Registry, execution contract, context-bound facts, volatile test journal, signed assertion verifier |
-| `storage` | Durable atomic journal through `crlt`; append `storage::SCHEMA` to the application's migrations |
-| `stripe` | Maintained `async-stripe` SDK: payment intents, confirmation, capture/cancellation, refunds, subscription creation/update/cancellation |
+The optional `stripe` feature uses the maintained async-stripe SDK. The optional
+`providers` feature implements [Mollie, Square, GoCardless, BTCPay and
+CoinGate](docs/PROVIDERS.md). No provider or currency is selected by default.
 
-Provider selection is configuration, not an endorsement or automatic fallback.
-No provider account, currency or commercial model is enabled by default.
+All library data stays in RAM. The caller implements the atomic `Journal` port
+and chooses persistence outside this crate. It reserves operation identity and
+maximum fee exposure before dispatch, retaining only minimal operational state.
+There is no database integration, SQL schema or disk cache in this library.
+The volatile `MemoryJournal` is for disposable use and conformance fixtures;
+production restart guarantees require a durable caller-owned implementation.
+A stable injected key protects context and receipt identities across restarts.
 
-## Information boundary
+Results normally contain normalized facts and necessary member actions only.
+Explicit `Disclosure::Complete` additionally returns complete available upstream
+responses in private transient buffers, including extensions. Provider payloads
+are untrusted assertions, separate from verified facts. They never enter the
+journal, ordinary diagnostics or gate evidence. SDKs/parsers may make temporary
+copies; host swap and crash dumps are outside the library's control.
 
-Input and provider details stay inside the payment library. `Private` has no
-serialization and redacts debug output; owned buffers are zeroized on drop.
-SDKs and JSON parsers may allocate temporary copies, so this is not a promise of
-complete process-memory erasure. Adapters do not log responses or include them
-in errors. Only required provider references are journaled; raw member evidence,
-commercial input and member-action responses are not. `observe` needs only an
-operation ID and authenticated context. `forget` removes retained continuation
-without rearming execution. The storage owner must apply retention to database
-backups as well as the live database.
+`Payments::paid_access` transforms established financial terms into a requested
+level and period. It rechecks the exact instruction and caps validity to the
+provider's bound. Amounts, currencies and object IDs remain inside the payment
+boundary. Missing/partial amount evidence cannot establish paid access.
+`Outcome::evidence` remains the generic minimal in-process gate fact; sandbox
+facts cannot create production evidence. Neither API accepts arbitrary JSON
+as proof. An active subscription or verified authorization is not collection.
 
-`Outcome::evidence` checks a caller-selected fact and validity bound. `Evidence`
-is an opaque in-process value: it cannot be deserialized from a client. The gate
-host checks its context and provider. Community gates atomically spend its
-receipt-derived claim; global gates accept a reusable fact for their bound check.
-Both record minimal gate metadata. No receipt means no gate evidence.
-An active subscription or a verified authorization does not prove collection.
+Reconciliation is a separate costed instruction. `Payments::observation` prepares
+it from an authenticated parent and fresh operation ID without provider I/O.
+Dispatch never retries automatically. Uncertain outcomes retain exposure and
+cannot authorize another charge. `forget` removes continuation through the
+caller port while preserving duplicate-dispatch protection.
 
-Production requires a durable journal, a stable injected random binding key,
-authenticated instructions and a trusted clock. The journal rejects a changed
-binding key. Losing the journal can destroy retry/replay guarantees. Keep
-operation markers for the lifetime of their IDs. No live payment tests or credential discovery.
-
-See [the contract](docs/CONTRACT.md) for adapter and integration obligations.
-See [service credentials](docs/CREDENTIALS.md) for injection, token refresh,
-account boundaries and the stable journal key.
-
-Additional built-in collection adapters: [Mollie, Square, GoCardless, BTCPay and CoinGate](docs/PROVIDERS.md)
-under the optional `providers` feature. The external policy layer selects what
-is offered; credentials and provider accounts are supplied by the host.
+See [the contract](docs/CONTRACT.md), [credentials](docs/CREDENTIALS.md), and
+[coverage requirements](docs/COVERAGE.md). Tests use inert local fixtures;
+production and provider-sandbox calls are not executed or authorized by this work.
