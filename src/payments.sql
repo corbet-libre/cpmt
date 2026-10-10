@@ -5,6 +5,11 @@ CREATE TABLE cpmt_operations (
     record TEXT NOT NULL,
     PRIMARY KEY (community_id, operation)
 ) WITHOUT ROWID;
+CREATE TABLE cpmt_identity (
+    community_id TEXT NOT NULL,
+    key_id TEXT NOT NULL,
+    PRIMARY KEY (community_id)
+) WITHOUT ROWID;
 CREATE TABLE cpmt_receipts (
     community_id TEXT NOT NULL,
     receipt TEXT NOT NULL,

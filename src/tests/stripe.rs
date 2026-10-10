@@ -283,6 +283,7 @@ async fn member_input_cannot_change_terms_or_choose_another_members_object() {
         "pm_fixture"
     );
     for params in [
+        serde_json::json!({"transfer_data[destination]":"acct_other"}),
         serde_json::json!({"charge":"ch_other"}),
         serde_json::json!({"payment_intent":"pi_other"}),
         serde_json::json!({"transfer_data":{"destination":"acct_other"}}),

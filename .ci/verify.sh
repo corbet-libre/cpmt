@@ -40,8 +40,9 @@ case "$coverage_target" in ""|"$PWD"/*) echo 'unsafe coverage target' >&2; exit 
 trap 'rm -rf -- "$coverage_target"' EXIT
 export CARGO_TARGET_DIR="$coverage_target"
 "$NIGHTLY_CARGO" llvm-cov --locked --workspace --all-features --branch --no-cfg-coverage --no-cfg-coverage-nightly --ignore-filename-regex '/tests/' --json --output-path coverage.json
-"$NIGHTLY_CARGO" llvm-cov report --locked --branch --ignore-filename-regex '/tests/' --lcov --output-path coverage.lcov
-"$NIGHTLY_CARGO" llvm-cov report --locked --branch --ignore-filename-regex '/tests/' --text --output-path coverage.txt
+"$NIGHTLY_CARGO" llvm-cov report --locked --workspace --all-features --branch --ignore-filename-regex '/tests/' --lcov --output-path coverage.lcov
+"$NIGHTLY_CARGO" llvm-cov report --locked --workspace --all-features --branch --ignore-filename-regex '/tests/' --text --output-path coverage.txt
 )
+cp coverage.json coverage.lcov coverage.txt "$ARTIFACT_ROOT/"
 python3 .github/test-source-coverage.py
 python3 .github/check-source-coverage.py coverage.lcov coverage.json coverage.txt

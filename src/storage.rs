@@ -1,6 +1,5 @@
 //! Durable payment journal inside the payment boundary, using the shared crlt pool.
 use crate::payments::{Error, Journal, Record, Result};
-use async_trait::async_trait;
 use crlt::params;
 use zeroize::Zeroizing;
 
@@ -30,8 +29,26 @@ fn decode(rows: Vec<crlt::Row>) -> Result<Option<Record>> {
         .transpose()
 }
 
-#[async_trait]
 impl Journal for LibsqlJournal {
+    async fn bind(&self, key_id: &[u8; 32]) -> Result<()> {
+        let mut tx = self.0.tx().await.map_err(|_| Error::Storage)?;
+        let rows = tx
+            .query("SELECT key_id FROM cpmt_identity", ())
+            .await
+            .map_err(|_| Error::Storage)?;
+        let key_id = crate::hex(key_id);
+        if let Some(row) = rows.first() {
+            if row.get_str(0).map_err(|_| Error::Storage)? != key_id {
+                return Err(Error::KeyMismatch);
+            }
+        } else {
+            tx.execute("INSERT INTO cpmt_identity (key_id) VALUES (?1)", [key_id])
+                .await
+                .map_err(|_| Error::Storage)?;
+        }
+        tx.commit().await.map_err(|_| Error::Storage)?;
+        Ok(())
+    }
     async fn get(&self, key: &str) -> Result<Option<Record>> {
         decode(
             self.0

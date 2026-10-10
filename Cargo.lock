@@ -308,13 +308,11 @@ name = "cpmt"
 version = "0.2.0"
 dependencies = [
  "async-stripe",
- "async-trait",
  "crlt",
  "ed25519-dalek",
  "hmac",
  "serde",
  "serde_json",
- "serde_urlencoded",
  "sha2",
  "tempfile",
  "thiserror 2.0.21",

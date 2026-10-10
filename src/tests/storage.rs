@@ -16,6 +16,12 @@ async fn durable_journal_survives_reopen_and_enforces_namespace_and_revision() {
     }];
     db.migrate(&migrations).await.unwrap();
     let journal = LibsqlJournal::new(&db, "payments").unwrap();
+    journal.bind(&[7; 32]).await.unwrap();
+    journal.bind(&[7; 32]).await.unwrap();
+    assert_eq!(
+        journal.bind(&[8; 32]).await.unwrap_err(),
+        Error::KeyMismatch
+    );
     assert!(journal.get("key").await.unwrap().is_none());
     assert!(journal.begin("key", &record(0)).await.unwrap().is_none());
     assert_eq!(

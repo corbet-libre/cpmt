@@ -1,6 +1,5 @@
 //! Stripe SDK adapter. Commercial parameters come from the authenticated caller.
 use crate::payments::*;
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::time::Duration;
@@ -180,7 +179,6 @@ impl Stripe {
     }
 }
 
-#[async_trait]
 impl Adapter for Stripe {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
@@ -282,6 +280,8 @@ fn forbidden(value: &Value) -> bool {
                 "application_fee_percent",
             ]
             .contains(&key.as_str())
+                || key.contains(['[', ']'])
+                || key.chars().any(char::is_control)
                 || forbidden(value)
         }),
         Value::Array(values) => values.iter().any(forbidden),

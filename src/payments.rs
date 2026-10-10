@@ -1,12 +1,16 @@
 //! Shared execution contract. Adapters own provider behavior; callers own policy.
-use async_trait::async_trait;
 use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::{
     collections::BTreeMap,
     fmt,
-    sync::{Arc, Mutex},
+    future::Future,
+    pin::Pin,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use zeroize::{Zeroize, Zeroizing};
 
@@ -28,6 +32,9 @@ pub enum Error {
     /// Required storage was unavailable; do not retry with a new identifier.
     #[error("payment storage unavailable")]
     Storage,
+    /// The durable journal was initialized with a different binding key.
+    #[error("payment journal key mismatch")]
+    KeyMismatch,
     /// Evidence does not establish the requested fact.
     #[error("payment evidence rejected")]
     Rejected,
@@ -164,21 +171,51 @@ impl Observation {
 }
 
 /// Adapter implementation is trusted code. Never construct one from member input.
-#[async_trait]
 pub trait Adapter: Send + Sync {
-    /// Enumerate exactly the operations implemented by this configured adapter.
+    /// Enumerate exactly the implemented operations of this configured adapter.
     fn capabilities(&self) -> Capabilities;
-    /// Execute once. Any ambiguous transport/provider result must be `Unknown`.
-    /// `key` is stable and must be used for upstream idempotency where supported.
-    async fn execute(
+    /// Execute once with the stable upstream idempotency key. Ambiguous results
+    /// must be Unknown. Parent references stay inside the payment boundary.
+    fn execute(
         &self,
         request: &Instruction,
         key: &str,
         previous: Option<&Private>,
-    ) -> Result<Observation>;
-    /// Read/reconcile an existing operation; must never initiate a new charge.
-    async fn observe(&self, operation: &str, continuation: Option<&Private>)
-    -> Result<Observation>;
+    ) -> impl Future<Output = Result<Observation>> + Send;
+    /// Reconcile without initiating another charge.
+    fn observe(
+        &self,
+        operation: &str,
+        continuation: Option<&Private>,
+    ) -> impl Future<Output = Result<Observation>> + Send;
+}
+
+type Pending<'a> = Pin<Box<dyn Future<Output = Result<Observation>> + Send + 'a>>;
+trait ErasedAdapter: Send + Sync {
+    fn capabilities(&self) -> Capabilities;
+    fn execute<'a>(
+        &'a self,
+        request: &'a Instruction,
+        key: &'a str,
+        previous: Option<&'a Private>,
+    ) -> Pending<'a>;
+    fn observe<'a>(&'a self, operation: &'a str, continuation: Option<&'a Private>) -> Pending<'a>;
+}
+impl<A: Adapter> ErasedAdapter for A {
+    fn capabilities(&self) -> Capabilities {
+        Adapter::capabilities(self)
+    }
+    fn execute<'a>(
+        &'a self,
+        request: &'a Instruction,
+        key: &'a str,
+        previous: Option<&'a Private>,
+    ) -> Pending<'a> {
+        Box::pin(Adapter::execute(self, request, key, previous))
+    }
+    fn observe<'a>(&'a self, operation: &'a str, continuation: Option<&'a Private>) -> Pending<'a> {
+        Box::pin(Adapter::observe(self, operation, continuation))
+    }
 }
 
 /// A current payment fact, created only by the executor. No provider raw data.
@@ -288,8 +325,14 @@ pub struct Record {
     pub(crate) revision: u64,
 }
 impl Record {
-    pub(crate) fn receipt(&self) -> Option<([u8; 32], [u8; 32])> {
+    /// Keyed receipt and context identities for the journal's atomic reservation.
+    /// Equal receipts may recur only under the same context. Neither is raw input.
+    pub fn receipt(&self) -> Option<([u8; 32], [u8; 32])> {
         self.outcome.receipt.map(|receipt| (receipt, self.owner))
+    }
+    /// Revision to persist alongside this opaque record for compare-and-swap.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 }
 impl Drop for Record {
@@ -307,15 +350,25 @@ impl fmt::Debug for Record {
 
 /// Atomic journal. Production implementations must survive process restarts.
 /// Key scope and raw records are private to the payment boundary. Never log them.
-#[async_trait]
 pub trait Journal: Send + Sync {
+    /// Atomically bind the namespace to a stable key fingerprint; reject changes.
+    fn bind(&self, key_id: &[u8; 32]) -> impl Future<Output = Result<()>> + Send;
     /// Load an existing entry without changing it.
-    async fn get(&self, key: &str) -> Result<Option<Record>>;
+    fn get(&self, key: &str) -> impl Future<Output = Result<Option<Record>>> + Send;
     /// Insert if absent and return the existing entry on conflict, atomically.
-    async fn begin(&self, key: &str, record: &Record) -> Result<Option<Record>>;
+    fn begin(
+        &self,
+        key: &str,
+        record: &Record,
+    ) -> impl Future<Output = Result<Option<Record>>> + Send;
     /// Atomically replace the expected revision and reserve any receipt for its
     /// context. Another context cannot claim it. Conflicts leave data unchanged.
-    async fn replace(&self, key: &str, expected_revision: u64, record: &Record) -> Result<()>;
+    fn replace(
+        &self,
+        key: &str,
+        expected_revision: u64,
+        record: &Record,
+    ) -> impl Future<Output = Result<()>> + Send;
 }
 
 /// Real volatile journal for disposable use and conformance tests.
@@ -325,11 +378,19 @@ pub struct MemoryJournal(Arc<Mutex<MemoryState>>);
 
 #[derive(Default)]
 struct MemoryState {
+    key_id: Option<[u8; 32]>,
     records: BTreeMap<String, Record>,
     receipts: BTreeMap<[u8; 32], [u8; 32]>,
 }
-#[async_trait]
 impl Journal for MemoryJournal {
+    async fn bind(&self, key_id: &[u8; 32]) -> Result<()> {
+        let mut state = self.0.lock().map_err(|_| Error::Storage)?;
+        if state.key_id.is_some_and(|previous| previous != *key_id) {
+            return Err(Error::KeyMismatch);
+        }
+        state.key_id = Some(*key_id);
+        Ok(())
+    }
     async fn get(&self, key: &str) -> Result<Option<Record>> {
         Ok(self
             .0
@@ -371,7 +432,8 @@ impl Journal for MemoryJournal {
 pub struct Payments<J> {
     journal: J,
     key: Zeroizing<[u8; 32]>,
-    adapters: BTreeMap<String, Arc<dyn Adapter>>,
+    initialized: AtomicBool,
+    adapters: BTreeMap<String, Arc<dyn ErasedAdapter>>,
 }
 impl<J: Journal> Payments<J> {
     /// Use an injected, stable, random journal-binding key; never discover secrets.
@@ -382,12 +444,13 @@ impl<J: Journal> Payments<J> {
         Ok(Self {
             journal,
             key: Zeroizing::new(key),
+            initialized: AtomicBool::new(false),
             adapters: BTreeMap::new(),
         })
     }
     /// Register one trusted adapter. Existing identities cannot be replaced.
-    pub fn register(&mut self, adapter: Arc<dyn Adapter>) -> Result<()> {
-        let capabilities = adapter.capabilities();
+    pub fn register<A: Adapter + 'static>(&mut self, adapter: Arc<A>) -> Result<()> {
+        let capabilities = Adapter::capabilities(adapter.as_ref());
         identifier(&capabilities.id)?;
         if capabilities.operations.is_empty() {
             return Err(Error::Invalid);
@@ -426,7 +489,7 @@ impl<J: Journal> Payments<J> {
         if now >= request.expires_at {
             return Err(Error::Expired);
         }
-        let key = self.operation_key(&request.binding, &request.id)?;
+        let key = self.operation_key(&request.binding, &request.id).await?;
         // The journal retains a keyed digest, never the raw terms or member evidence.
         let bytes = Zeroizing::new(
             serde_json::to_vec(&(
@@ -442,18 +505,6 @@ impl<J: Journal> Payments<J> {
             .map_err(|_| Error::Invalid)?,
         );
         let fingerprint = self.mac(&bytes)?;
-        let parent = if let Some(id) = &request.parent {
-            let parent_key = self.operation_key(&request.binding, id)?;
-            let record = self.load(&parent_key, &request.binding).await?;
-            if record.outcome.adapter != request.adapter || id == &request.id {
-                return Err(Error::Rejected);
-            }
-            Some(Private::new(
-                record.continuation.clone().ok_or(Error::Rejected)?,
-            ))
-        } else {
-            None
-        };
         let initial = Record {
             fingerprint,
             owner: self.mac(
@@ -481,6 +532,18 @@ impl<J: Journal> Payments<J> {
                 member_action: None,
             });
         }
+        let parent = if let Some(id) = &request.parent {
+            let parent_key = self.operation_key(&request.binding, id).await?;
+            let record = self.load(&parent_key, &request.binding).await?;
+            if record.outcome.adapter != request.adapter || id == &request.id {
+                return Err(Error::Rejected);
+            }
+            Some(Private::new(
+                record.continuation.clone().ok_or(Error::Rejected)?,
+            ))
+        } else {
+            None
+        };
         // Cancellation, a crash, or an adapter error leaves the uncertain marker.
         let observation = adapter.execute(request, &key, parent.as_ref()).await?;
         self.finish(&key, initial, observation).await
@@ -488,7 +551,7 @@ impl<J: Journal> Payments<J> {
     /// Reconcile using only the authenticated binding and operation ID.
     /// Original terms and raw member evidence can be discarded after execution.
     pub async fn observe(&self, id: &[u8; 32], binding: &Binding) -> Result<Execution> {
-        let key = self.operation_key(binding, id)?;
+        let key = self.operation_key(binding, id).await?;
         let previous = self.load(&key, binding).await?;
         let adapter = self
             .adapters
@@ -502,13 +565,13 @@ impl<J: Journal> Payments<J> {
     }
     /// Retrieve the latest journaled fact, with no network call or raw provider data.
     pub async fn outcome(&self, id: &[u8; 32], binding: &Binding) -> Result<Outcome> {
-        let key = self.operation_key(binding, id)?;
+        let key = self.operation_key(binding, id).await?;
         Ok(Outcome(self.load(&key, binding).await?.outcome.clone()))
     }
     /// Erase provider continuation when the caller no longer needs reconciliation.
     /// Keep the minimal operation marker to prevent accidental re-execution.
     pub async fn forget(&self, id: &[u8; 32], binding: &Binding) -> Result<()> {
-        let key = self.operation_key(binding, id)?;
+        let key = self.operation_key(binding, id).await?;
         let mut record = self.load(&key, binding).await?;
         let revision = record.revision;
         record.revision = revision.checked_add(1).ok_or(Error::Storage)?;
@@ -524,8 +587,14 @@ impl<J: Journal> Payments<J> {
         }
         Ok(record)
     }
-    fn operation_key(&self, binding: &Binding, id: &[u8; 32]) -> Result<String> {
+    async fn operation_key(&self, binding: &Binding, id: &[u8; 32]) -> Result<String> {
         validate_binding(binding)?;
+        if !self.initialized.load(Ordering::Acquire) {
+            self.journal
+                .bind(&self.mac(b"cpmt.journal-key.v2")?)
+                .await?;
+            self.initialized.store(true, Ordering::Release);
+        }
         let bytes = serde_json::to_vec(&("cpmt.operation.v2", &binding.scope, id))
             .map_err(|_| Error::Invalid)?;
         Ok(crate::hex(&self.mac(&bytes)?))

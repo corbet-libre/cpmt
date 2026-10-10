@@ -22,7 +22,6 @@ struct Provider {
     calls: AtomicUsize,
     error: bool,
 }
-#[async_trait]
 impl Adapter for Provider {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
@@ -424,4 +423,85 @@ async fn one_receipt_cannot_fund_another_member_or_action() {
         Err(Error::Conflict)
     ));
     assert_eq!(journal.0.lock().unwrap().receipts.len(), 1);
+}
+
+struct SlowProvider {
+    started: tokio::sync::Notify,
+}
+impl Adapter for SlowProvider {
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            id: "test".into(),
+            operations: vec!["collect".into()],
+        }
+    }
+    async fn execute(&self, _: &Instruction, _: &str, _: Option<&Private>) -> Result<Observation> {
+        self.started.notify_one();
+        std::future::pending().await
+    }
+    async fn observe(&self, _: &str, _: Option<&Private>) -> Result<Observation> {
+        Ok(Observation::fact(State::Unknown))
+    }
+}
+
+#[tokio::test]
+async fn cancelling_an_inflight_request_preserves_its_uncertain_execution_marker() {
+    let provider = Arc::new(SlowProvider {
+        started: tokio::sync::Notify::new(),
+    });
+    let mut payments = Payments::new(MemoryJournal::default(), [7; 32]).unwrap();
+    payments.register(provider.clone()).unwrap();
+    let payments = Arc::new(payments);
+    let worker = payments.clone();
+    let task = tokio::spawn(async move { worker.execute(&request(), 1).await });
+    provider.started.notified().await;
+    task.abort();
+    assert!(matches!(task.await,Err(error) if error.is_cancelled()));
+    assert_eq!(
+        payments
+            .execute(&request(), 1)
+            .await
+            .unwrap()
+            .outcome
+            .state(),
+        State::Unknown
+    );
+}
+
+#[tokio::test]
+async fn forgetting_a_parent_does_not_invalidate_a_completed_child_retry() {
+    let (payments, provider) = setup(MemoryJournal::default(), false);
+    payments.execute(&request(), 1).await.unwrap();
+    let mut child = request();
+    child.id = [2; 32];
+    child.parent = Some([1; 32]);
+    child.operation = "refund".into();
+    payments.execute(&child, 1).await.unwrap();
+    payments
+        .forget(&request().id, &request().binding)
+        .await
+        .unwrap();
+    assert_eq!(
+        payments.execute(&child, 2).await.unwrap().outcome.state(),
+        State::Collected
+    );
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn changing_the_binding_key_cannot_rearm_a_payment_id() {
+    let journal = MemoryJournal::default();
+    let (payments, _) = setup(journal.clone(), false);
+    payments.execute(&request(), 1).await.unwrap();
+    let mut reopened = Payments::new(journal, [8; 32]).unwrap();
+    let provider = Arc::new(Provider {
+        calls: AtomicUsize::new(0),
+        error: false,
+    });
+    reopened.register(provider.clone()).unwrap();
+    assert!(matches!(
+        reopened.execute(&request(), 1).await,
+        Err(Error::KeyMismatch)
+    ));
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
 }
