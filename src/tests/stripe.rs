@@ -4,9 +4,10 @@ use tokio::{
     net::TcpListener,
 };
 
-async fn server(replies: Vec<&'static str>) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+async fn server(replies: Vec<&str>) -> (String, tokio::task::JoinHandle<Vec<String>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
+    let replies: Vec<String> = replies.into_iter().map(String::from).collect();
     let task = tokio::spawn(async move {
         let mut requests = Vec::new();
         for reply in replies {
@@ -505,4 +506,29 @@ async fn host_tracing_cannot_capture_sdk_payment_paths_or_keys() {
     .with_subscriber(recorder)
     .await;
     assert_eq!(calls.await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn deeply_nested_provider_actions_cannot_panic_or_prove_payment() {
+    let nested = format!("{}null{}", "[".repeat(160), "]".repeat(160));
+    let body = format!(
+        r#"{{"id":"pi_fixture","object":"payment_intent","status":"requires_action","next_action":{nested}}}"#
+    );
+    let (url, calls) = server(vec![&body]).await;
+    let mut adapter = adapter();
+    adapter.client = ClientBuilder::new("sk_test_fixture")
+        .url(format!("{url}/"))
+        .build()
+        .unwrap();
+    let result = adapter
+        .execute(
+            &request("stripe.intent.create", serde_json::json!({})),
+            "key",
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.state, State::Unknown);
+    assert!(result.member_action.is_none());
+    assert_eq!(calls.await.unwrap().len(), 1);
 }

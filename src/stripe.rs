@@ -167,10 +167,13 @@ impl Stripe {
         })
         .expect("provider reference strings serialize to JSON");
         let member_action = if state == State::RequiresAction {
-            let next_action = reply.next_action.map(|value| {
-                serde_json::from_str::<Value>(&miniserde::json::to_string(&value))
-                    .expect("SDK JSON value is valid JSON")
-            });
+            let next_action = reply
+                .next_action
+                .map(|value| {
+                    serde_json::from_str::<Value>(&miniserde::json::to_string(&value))
+                        .map_err(|_| Error::Rejected)
+                })
+                .transpose()?;
             Some(Private::new(serde_json::to_vec(&serde_json::json!({"client_secret":reply.client_secret, "next_action":next_action})).expect("JSON value serializes")))
         } else {
             None
