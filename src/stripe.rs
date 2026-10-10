@@ -228,15 +228,19 @@ impl Adapter for Stripe {
             }
         }
         let path = format!("/{path}");
-        let request = if request.operation == "stripe.subscription.cancel" {
-            let request = RequestBuilder::new(StripeMethod::Delete, path);
-            if params.is_empty() {
-                request
-            } else {
-                request.query(&params)
-            }
+        let cancel = request.operation == "stripe.subscription.cancel";
+        let method = if cancel {
+            StripeMethod::Delete
         } else {
-            RequestBuilder::new(StripeMethod::Post, path).form(&params)
+            StripeMethod::Post
+        };
+        let request = RequestBuilder::new(method, path);
+        let request = if params.is_empty() {
+            request
+        } else if cancel {
+            request.query(&params)
+        } else {
+            request.form(&params)
         };
         let request = request
             .customize::<Reply>()

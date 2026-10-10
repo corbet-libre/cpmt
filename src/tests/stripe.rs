@@ -119,6 +119,7 @@ async fn sdk_creates_hold_captures_and_observes_without_repeating_a_charge() {
     );
     assert!(calls[0].contains("currency=chf"));
     assert!(calls[1].starts_with("POST /v1/payment_intents/pi_fixture/capture "));
+    assert_eq!(calls[1].split_once("\r\n\r\n").unwrap().1, "");
     assert!(calls[2].starts_with("GET /v1/payment_intents/pi_fixture "));
 }
 
