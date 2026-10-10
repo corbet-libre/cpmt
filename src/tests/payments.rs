@@ -765,13 +765,14 @@ async fn rich_private_results_are_opt_in_and_never_enter_caller_state() {
         b"full-private-provider-result"
     );
     assert!(!format!("{:?}", full.upstream).contains("private-provider"));
-    let stored = journal.0.lock().unwrap();
-    for record in stored.records.values() {
-        let json = serde_json::to_string(record).unwrap();
-        assert!(!json.contains("full-private-provider"));
-        assert!(!json.contains("member-only"));
+    {
+        let stored = journal.0.lock().unwrap();
+        for record in stored.records.values() {
+            let json = serde_json::to_string(record).unwrap();
+            assert!(!json.contains("full-private-provider"));
+            assert!(!json.contains("member-only"));
+        }
     }
-    drop(stored);
     let replay = payments
         .dispatch_with_output(
             &request,

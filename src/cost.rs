@@ -1,6 +1,7 @@
 //! Pure cost previews and request binding. No pricing endpoint is contacted.
 use crate::payments::{Error as PaymentError, Instruction, Result};
 pub use cfbk::cost::*;
+pub use cfbk::{Candidate, Config};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
