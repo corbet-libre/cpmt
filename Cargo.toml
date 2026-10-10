@@ -29,7 +29,7 @@ sha2 = "0.11"
 ed25519-dalek = { version = "3", features = ["serde"] }
 hmac = "0.13"
 zeroize = { version = "1", features = ["derive"] }
-async-stripe = { version = "1.0.0-rc.9", default-features = false, features = ["rustls-tls-webpki-roots", "rustls-ring", "redact-generated-debug"], optional = true }
+async-stripe = { version = "1.0.0-rc.9", default-features = false, features = ["rustls-tls-webpki-roots", "rustls-aws-lc-rs", "redact-generated-debug"], optional = true }
 stripe-client-core = { package = "async-stripe-client-core", version = "1.0.0-rc.9", optional = true }
 miniserde = { version = "0.1", optional = true }
 tracing = { version = "0.1", optional = true }
