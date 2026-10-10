@@ -48,3 +48,22 @@ caller port while preserving duplicate-dispatch protection.
 See [the contract](docs/CONTRACT.md), [credentials](docs/CREDENTIALS.md), and
 [coverage requirements](docs/COVERAGE.md). Tests use inert local fixtures;
 production and provider-sandbox calls are not executed or authorized by this work.
+
+`Payments::run` uses the shared planner for explicit configured or cost-ordered
+alternatives. It checks all eligible tasks' bound terms, context and requested
+fact before the first dispatch, and stops on success, pending, refusal or uncertain
+effects. A provider-confirmed safe failure may still cost money. Unknown costs
+remain reserved, including across replays in caller-owned state.
+
+`simulation::simulate` uses the same planner and outcome classification with dummy
+responses. `access::simulate_access` applies the same level/period transformation
+but returns a distinct non-proof type. Neither accepts a provider or credential.
+Real adapters refuse Simulation mode; Sandbox is separate and still costed.
+
+Stripe success payloads preserve available SDK objects, including extensions;
+typed Stripe API errors preserve the complete fields exposed by the SDK. Its
+transport discards malformed response bytes and unknown error fields before they
+reach this adapter, and does not expose response headers. REST adapters preserve
+bounded response bytes, status and available headers through private output.
+Stripe's maintained SDK buffers its response internally; its limit here is a
+request timeout and explicit input bound, not a configurable response byte cap.

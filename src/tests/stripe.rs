@@ -810,3 +810,45 @@ async fn actual_mode_action_and_timeout_edges_cannot_mint_success() {
     );
     assert_eq!(calls.await.unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn injected_client_retry_policy_cannot_repeat_a_costed_observation() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let mut count = 0;
+        while let Ok(Ok((mut stream, _))) =
+            tokio::time::timeout(Duration::from_millis(200), listener.accept()).await
+        {
+            let mut buf = [0; 4096];
+            let n = stream.read(&mut buf).await.unwrap();
+            assert!(String::from_utf8_lossy(&buf[..n]).starts_with("GET "));
+            let body = r#"{"error":{"type":"api_error","message":"fixture"}}"#;
+            stream.write_all(format!("HTTP/1.1 500 Error\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+            count += 1;
+        }
+        count
+    });
+    let adapter = Stripe::from_client(
+        "stripe".into(),
+        ClientBuilder::new("sk_test_fixture")
+            .url(url)
+            .request_strategy(RequestStrategy::Retry(3))
+            .build()
+            .unwrap(),
+        Duration::from_secs(2),
+        8192,
+        Mode::Sandbox,
+    )
+    .unwrap();
+    let previous = Private::new(br#"{"resource":"payment_intents","id":"pi_fixture"}"#.to_vec());
+    assert_eq!(
+        adapter
+            .observe("stripe.intent.create", Some(&previous))
+            .await
+            .unwrap()
+            .state,
+        State::Unknown
+    );
+    assert_eq!(server.await.unwrap(), 1);
+}

@@ -316,6 +316,7 @@ impl Stripe {
             .unwrap_or_else(|_| Observation::fact(State::Unknown));
         observation.upstream.push(ProviderReply {
             phase: "response",
+            headers: None,
             http_status: None,
             payload,
         });
@@ -330,6 +331,7 @@ fn provider_error(error: stripe::StripeError, mut observation: Observation) -> O
     if let stripe::StripeError::Stripe(reply, status) = error {
         observation.upstream.push(ProviderReply {
             phase: "error",
+            headers: None,
             http_status: Some(status),
             payload: Private::new(serde_json::to_vec(&reply).expect("SDK response serializes")),
         });
@@ -450,7 +452,8 @@ impl Adapter for Stripe {
         let reference = reference(continuation)?;
         let path = format!("{}/{}", reference.resource, reference.id);
         let read = RequestBuilder::new(StripeMethod::Get, format!("/{path}"))
-            .customize::<miniserde::json::Object>();
+            .customize::<miniserde::json::Object>()
+            .request_strategy(RequestStrategy::Once);
         match tokio::time::timeout(
             self.timeout,
             read.send(&self.client)

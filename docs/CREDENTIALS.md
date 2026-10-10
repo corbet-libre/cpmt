@@ -106,6 +106,8 @@ complete process-memory erasure.
 The optional `providers` feature uses the same host injection contract. The host
 passes one secret as `Private` to `providers::Rest::new`; public endpoint/store,
 sandbox/test mode and API version settings live in its `Provider` configuration.
+An explicit shared `cost::Mode` must agree with those settings; a test credential
+is not permission to spend or proof that a sandbox action is free.
 
 | Provider | Secret source/format | Public configuration and scope |
 |---|---|---|

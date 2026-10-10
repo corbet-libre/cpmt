@@ -188,6 +188,9 @@ async fn every_provider_collects_and_observes_using_authenticated_minimal_refere
             .await
             .unwrap();
         assert!(matches!(result.state, State::Collected | State::Settled));
+        let headers: Vec<(String, Vec<u8>)> =
+            serde_json::from_slice(result.upstream[0].headers.as_ref().unwrap().expose()).unwrap();
+        assert!(headers.iter().any(|(name, _)| name == "content-length"));
         let retained = result.continuation.as_ref().unwrap();
         assert!(!String::from_utf8_lossy(retained.expose()).contains("NEVER"));
         assert!(

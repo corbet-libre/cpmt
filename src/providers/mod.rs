@@ -227,6 +227,16 @@ impl Rest {
         }
         Ok(ProviderReply {
             phase: "response",
+            headers: Some(Private::new(
+                serde_json::to_vec(
+                    &response
+                        .headers()
+                        .iter()
+                        .map(|(name, value)| (name.as_str(), value.as_bytes()))
+                        .collect::<Vec<_>>(),
+                )
+                .expect("header fields serialize"),
+            )),
             http_status: Some(status),
             payload: Private::new(bytes.to_vec()),
         })

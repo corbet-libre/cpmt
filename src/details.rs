@@ -18,6 +18,10 @@ pub struct ProviderReply {
     pub phase: &'static str,
     /// Status code when the upstream transport exposes it.
     pub http_status: Option<u16>,
+    /// Available HTTP response headers as a JSON list of name/byte-array pairs.
+    /// Duplicate fields and non-UTF8 values are preserved; SDK-only adapters may
+    /// not expose headers. These private bytes can include cookies or request IDs.
+    pub headers: Option<Private>,
     /// Complete available payload, including provider extensions and diagnostics.
     /// Bytes may be malformed or non-JSON; the caller must treat them as untrusted.
     pub payload: Private,

@@ -1,5 +1,8 @@
 use super::*;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 pub(crate) fn request() -> Instruction {
     Instruction {
@@ -61,6 +64,7 @@ impl Adapter for Provider {
             member_action: Some(Private::new(b"member-only".to_vec())),
             upstream: vec![ProviderReply {
                 phase: "response",
+                headers: None,
                 http_status: Some(200),
                 payload: Private::new(b"full-private-provider-result".to_vec()),
             }],

@@ -77,8 +77,9 @@ evidence. Raw provider JSON cannot construct Outcome or paid-access proofs.
 
 ## Maintained integrations
 
-Adapters advertise implemented operations and enforce input/response/timeout
-limits. Observe is read-only and never repeats settlement. Lost create responses
+Adapters advertise implemented operations and enforce explicit input/timeout
+limits. REST transports also enforce response byte limits; Stripe's maintained
+SDK buffers responses internally and exposes no response-size setting. Observe is read-only and never repeats settlement. Lost create responses
 without a reference remain uncertain; new IDs are not safe retries. Parent
 references must come from the same authenticated account/context. Custody,
 connected-account transfers and platform fee/split instructions are unsupported.

@@ -24,7 +24,7 @@ not promise that every payment method/account supports every operation.
 ## Construction and credentials
 
 The host constructs `Provider`, `Limits` and `Rest::new(id, provider, credential,
-limits)`, then registers the adapter in `Payments`. See [CREDENTIALS.md](CREDENTIALS.md)
+limits, mode)`, then registers the adapter in `Payments`. See [CREDENTIALS.md](CREDENTIALS.md)
 for secret references, OAuth refresh, rotation and the separate durable journal
 binding key. Provider clients do not read environment variables or secret files.
 
@@ -114,7 +114,9 @@ a payment fact; observe fetches the authenticated provider resource.
 - The journal retains only resource ID/type, the parent payment ID when needed,
   and the expected amount/currency needed to validate later reads. The keyed
   receipt digest contains no billing/KYC data. Raw bodies, member tokens, links,
-  headers and provider errors are discarded. `forget` removes continuation data
+  bodies and errors are discarded by default. `Disclosure::Complete` returns
+  available bodies, status and response headers in private RAM buffers; none enter
+  caller operational state. `forget` removes continuation data
   without rearming execution. SDK/JSON/HTTP temporary allocations are not a claim
   of process-wide secure erasure; owned input/body buffers are zeroized where
   possible, and request tracing is suppressed for each network future.
@@ -153,3 +155,22 @@ Primary contracts: [Mollie](https://docs.mollie.com/reference/create-payment),
 [BTCPay Greenfield](https://docs.btcpayserver.org/API/Greenfield/v1/swagger.json),
 [CoinGate OpenAPI](https://github.com/coingate/openapi/blob/main/reference/v2.json),
 [Prism native integration](https://github.com/juspay/hyperswitch-prism/blob/main/sdk/rust/README.md).
+
+## Cost and information modes
+
+The host supplies an explicit `cost::Mode` matching the configured account and
+sandbox endpoint. Mollie OAuth test mode is explicit; profile-key mode and BTCPay
+network selection remain host configuration. Simulation is refused by real
+adapters. Sandbox outcomes cannot construct production gate or paid-access proof.
+
+These APIs do not establish the operator's final service fee. Supply a verified
+provider quote or configured bounded tariff, source and validity to
+`Payments::preview`; actual fees stay unknown. A quote must cover all calls in
+the declared operation. No endpoint is contacted by preview or simulation.
+Provider principal, refund amount and service charge remain distinct.
+
+Complete disclosure does not retain upstream results across calls: replays return
+only the minimal host-owned snapshot. Raw extensions and diagnostic data are
+untrusted; they cannot grant access. Credentials and caller atomic operational
+state remain injected capabilities. No live provider or sandbox sessions were
+executed for this implementation.
