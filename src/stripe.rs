@@ -227,11 +227,26 @@ impl Adapter for Stripe {
                 client.post_form::<Reply, _>(&path, &params).await
             }
         };
+        let uncertain = || Observation {
+            // Known-object operations can still be read after a lost response.
+            // Refund creation returns a different object; its ID remains unknown.
+            continuation: parent
+                .as_ref()
+                .filter(|p| p.resource == *resource)
+                .map(|p| {
+                    Private::new(
+                        serde_json::to_vec(p)
+                            .expect("provider reference strings serialize to JSON"),
+                    )
+                }),
+            ..Observation::fact(State::Unknown)
+        };
         match tokio::time::timeout(self.timeout, future).await {
-            Ok(Ok(reply)) => Ok(Self::reduce(reply, resource, expected)
-                .unwrap_or_else(|_| Observation::fact(State::Unknown))),
+            Ok(Ok(reply)) => {
+                Ok(Self::reduce(reply, resource, expected).unwrap_or_else(|_| uncertain()))
+            }
             // A transport/server/decoding error cannot prove that nothing happened.
-            _ => Ok(Observation::fact(State::Unknown)),
+            _ => Ok(uncertain()),
         }
     }
     async fn observe(

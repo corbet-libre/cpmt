@@ -26,7 +26,9 @@ Adapters are trusted library code, not client plugins. They must:
 The executor persists a keyed instruction digest and `Unknown` before dispatch.
 Concurrent calls or process cancellation cannot dispatch that ID twice. Journal
 writes use compare-and-swap revisions. The namespace is atomically bound to the
-injected key fingerprint; reopening with a different key fails before dispatch. A failed final write leaves an uncertain
+injected key fingerprint; reopening with a different key fails before dispatch. Observation requires a retained reference and never revises an unfinished
+dispatch. `forget` refuses an unfinished dispatch so a late reply cannot silently
+undo acknowledged erasure. A failed final write leaves an uncertain
 result and is never success. This is at-most-once dispatch, not a guarantee that
 a provider collected money. Reconciliation without a provider reference may
 remain `Unknown`; no generic library can infer an unreported external outcome.

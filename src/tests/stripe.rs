@@ -367,3 +367,41 @@ fn configuration_requires_explicit_credentials_and_limits() {
         );
     }
 }
+
+#[tokio::test]
+async fn lost_known_object_replies_preserve_read_only_reconciliation() {
+    let (url, calls) = server(vec!["", PAID, ""]).await;
+    let mut adapter = adapter();
+    adapter.client = Client::from_url(url.as_str(), "sk_test_fixture");
+    let parent = Private::new(br#"{"id":"pi_fixture","resource":"payment_intents"}"#.to_vec());
+    let result = adapter
+        .execute(
+            &request("stripe.intent.capture", serde_json::json!({})),
+            "capture",
+            Some(&parent),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.state, State::Unknown);
+    assert_eq!(
+        adapter
+            .observe("stripe.intent.capture", result.continuation.as_ref())
+            .await
+            .unwrap()
+            .state,
+        State::Collected
+    );
+    let refund = adapter
+        .execute(
+            &request("stripe.refund.create", serde_json::json!({})),
+            "refund",
+            Some(&parent),
+        )
+        .await
+        .unwrap();
+    assert_eq!(refund.state, State::Unknown);
+    assert!(refund.continuation.is_none());
+    let calls = calls.await.unwrap();
+    assert_eq!(calls.len(), 3);
+    assert!(calls[1].starts_with("GET /v1/payment_intents/pi_fixture "));
+}

@@ -159,15 +159,10 @@ async fn raw_input_can_be_dropped_before_reconciliation_and_forgetting() {
             .continuation
             .is_none()
     );
-    assert_eq!(
-        payments
-            .observe(&id, &binding)
-            .await
-            .unwrap()
-            .outcome
-            .state(),
-        State::Unknown
-    );
+    assert!(matches!(
+        payments.observe(&id, &binding).await,
+        Err(Error::Unsupported)
+    ));
     assert_eq!(
         payments
             .execute(&self::request(), 2)
@@ -175,7 +170,7 @@ async fn raw_input_can_be_dropped_before_reconciliation_and_forgetting() {
             .unwrap()
             .outcome
             .state(),
-        State::Unknown
+        State::Refunded
     );
 }
 
@@ -432,6 +427,7 @@ async fn one_receipt_cannot_fund_another_member_or_action() {
 
 struct SlowProvider {
     started: tokio::sync::Notify,
+    release: tokio::sync::Notify,
 }
 impl Adapter for SlowProvider {
     fn max_input_bytes(&self) -> usize {
@@ -445,7 +441,12 @@ impl Adapter for SlowProvider {
     }
     async fn execute(&self, _: &Instruction, _: &str, _: Option<&Private>) -> Result<Observation> {
         self.started.notify_one();
-        std::future::pending().await
+        self.release.notified().await;
+        Ok(Observation {
+            continuation: Some(Private::new(b"provider-reference".to_vec())),
+            claim: Some(Private::new(b"slow:receipt".to_vec())),
+            ..Observation::fact(State::Collected)
+        })
     }
     async fn observe(&self, _: &str, _: Option<&Private>) -> Result<Observation> {
         Ok(Observation::fact(State::Unknown))
@@ -456,6 +457,7 @@ impl Adapter for SlowProvider {
 async fn cancelling_an_inflight_request_preserves_its_uncertain_execution_marker() {
     let provider = Arc::new(SlowProvider {
         started: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
     });
     let mut payments = Payments::new(MemoryJournal::default(), [7; 32]).unwrap();
     payments.register(provider.clone()).unwrap();
@@ -629,4 +631,56 @@ async fn adapter_input_limits_apply_before_journaling_or_dispatch() {
     ));
     assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
     assert!(journal.0.lock().unwrap().records.is_empty());
+}
+
+#[tokio::test]
+async fn polling_or_forgetting_an_inflight_payment_cannot_discard_its_provider_result() {
+    let provider = Arc::new(SlowProvider {
+        started: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+    });
+    let journal = MemoryJournal::default();
+    let mut payments = Payments::new(journal.clone(), [7; 32]).unwrap();
+    payments.register(provider.clone()).unwrap();
+    let payments = Arc::new(payments);
+    let worker = payments.clone();
+    let task = tokio::spawn(async move { worker.execute(&request(), 1).await });
+    provider.started.notified().await;
+    let request = request();
+    assert!(matches!(
+        payments.observe(&request.id, &request.binding).await,
+        Err(Error::Unsupported)
+    ));
+    assert_eq!(
+        payments
+            .forget(&request.id, &request.binding)
+            .await
+            .unwrap_err(),
+        Error::Conflict
+    );
+    provider.release.notify_one();
+    assert_eq!(
+        task.await.unwrap().unwrap().outcome.state(),
+        State::Collected
+    );
+    assert_eq!(
+        payments
+            .outcome(&request.id, &request.binding)
+            .await
+            .unwrap()
+            .state(),
+        State::Collected
+    );
+    assert!(
+        journal
+            .0
+            .lock()
+            .unwrap()
+            .records
+            .values()
+            .next()
+            .unwrap()
+            .continuation
+            .is_some()
+    );
 }

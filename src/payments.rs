@@ -572,9 +572,11 @@ impl<J: Journal> Payments<J> {
             .adapters
             .get(&previous.outcome.adapter)
             .ok_or(Error::Unsupported)?;
-        let continuation = previous.continuation.clone().map(Private::new);
+        // No reference means no read-only reconciliation is possible. In
+        // particular, a poll must not revise the marker of an in-flight dispatch.
+        let continuation = Private::new(previous.continuation.clone().ok_or(Error::Unsupported)?);
         let observation = adapter
-            .observe(&previous.outcome.operation, continuation.as_ref())
+            .observe(&previous.outcome.operation, Some(&continuation))
             .await?;
         self.finish(&key, previous, observation).await
     }
@@ -589,6 +591,11 @@ impl<J: Journal> Payments<J> {
         let key = self.operation_key(binding, id).await?;
         let mut record = self.load(&key, binding).await?;
         let revision = record.revision;
+        // An unfinished dispatch can still receive a reference. Do not report
+        // successful erasure while that write is outstanding.
+        if revision == 0 {
+            return Err(Error::Conflict);
+        }
         record.revision = revision.checked_add(1).ok_or(Error::Storage)?;
         if let Some(mut bytes) = record.continuation.take() {
             bytes.zeroize();
