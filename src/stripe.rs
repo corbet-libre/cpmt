@@ -60,13 +60,23 @@ struct Reference {
     id: String,
 }
 
-#[derive(miniserde::Deserialize)]
+#[derive(Deserialize)]
 struct Reply {
     id: String,
     object: String,
     status: String,
     client_secret: Option<String>,
-    next_action: Option<miniserde::json::Value>,
+    next_action: Option<Value>,
+}
+
+fn decode(mut object: miniserde::json::Object) -> Result<Reply> {
+    // Reduce the SDK's transient object before crossing into our typed schema.
+    // Serde also bounds nesting in provider-supplied member actions.
+    object.retain(|key, _| {
+        ["id", "object", "status", "client_secret", "next_action"].contains(&key.as_str())
+    });
+    let json = zeroize::Zeroizing::new(miniserde::json::to_string(&object));
+    serde_json::from_str(&json).map_err(|_| Error::Rejected)
 }
 
 impl Stripe {
@@ -167,14 +177,7 @@ impl Stripe {
         })
         .expect("provider reference strings serialize to JSON");
         let member_action = if state == State::RequiresAction {
-            let next_action = reply
-                .next_action
-                .map(|value| {
-                    serde_json::from_str::<Value>(&miniserde::json::to_string(&value))
-                        .map_err(|_| Error::Rejected)
-                })
-                .transpose()?;
-            Some(Private::new(serde_json::to_vec(&serde_json::json!({"client_secret":reply.client_secret, "next_action":next_action})).expect("JSON value serializes")))
+            Some(Private::new(serde_json::to_vec(&serde_json::json!({"client_secret":reply.client_secret, "next_action":reply.next_action})).expect("JSON value serializes")))
         } else {
             None
         };
@@ -243,7 +246,7 @@ impl Adapter for Stripe {
             request.form(&params)
         };
         let request = request
-            .customize::<Reply>()
+            .customize::<miniserde::json::Object>()
             .request_strategy(RequestStrategy::Idempotent(
                 IdempotencyKey::new(key).map_err(|_| Error::Invalid)?,
             ));
@@ -267,9 +270,9 @@ impl Adapter for Stripe {
             ..Observation::fact(State::Unknown)
         };
         match tokio::time::timeout(self.timeout, future).await {
-            Ok(Ok(reply)) => {
-                Ok(Self::reduce(reply, resource, expected).unwrap_or_else(|_| uncertain()))
-            }
+            Ok(Ok(reply)) => Ok(decode(reply)
+                .and_then(|reply| Self::reduce(reply, resource, expected))
+                .unwrap_or_else(|_| uncertain())),
             // A transport/server/decoding error cannot prove that nothing happened.
             _ => Ok(uncertain()),
         }
@@ -284,7 +287,8 @@ impl Adapter for Stripe {
         };
         let reference = reference(continuation)?;
         let path = format!("{}/{}", reference.resource, reference.id);
-        let read = RequestBuilder::new(StripeMethod::Get, format!("/{path}")).customize::<Reply>();
+        let read = RequestBuilder::new(StripeMethod::Get, format!("/{path}"))
+            .customize::<miniserde::json::Object>();
         match tokio::time::timeout(
             self.timeout,
             read.send(&self.client)
@@ -292,7 +296,8 @@ impl Adapter for Stripe {
         )
         .await
         {
-            Ok(Ok(reply)) => Self::reduce(reply, &reference.resource, Some(&reference.id)),
+            Ok(Ok(reply)) => decode(reply)
+                .and_then(|reply| Self::reduce(reply, &reference.resource, Some(&reference.id))),
             _ => Ok(Observation {
                 continuation: Some(Private::new(continuation.expose().to_vec())),
                 ..Observation::fact(State::Unknown)

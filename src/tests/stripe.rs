@@ -280,9 +280,7 @@ fn provider_data_is_reduced_and_unrecognized_statuses_never_prove_payment() {
             object: object.into(),
             status: status.into(),
             client_secret: Some("secret".into()),
-            next_action: Some(
-                miniserde::json::from_str(r#"{"url":"https://example.test"}"#).unwrap(),
-            ),
+            next_action: Some(serde_json::json!({"url":"https://example.test"})),
         };
         let observation = Stripe::reduce(reply, resource, None).unwrap();
         assert_eq!(observation.state, state);
@@ -296,11 +294,9 @@ fn provider_data_is_reduced_and_unrecognized_statuses_never_prove_payment() {
         ("refunds", None),
         ("payment_intents", Some("other")),
     ] {
-        assert!(
-            Stripe::reduce(miniserde::json::from_str(PAID).unwrap(), resource, expected).is_err()
-        );
+        assert!(Stripe::reduce(serde_json::from_str(PAID).unwrap(), resource, expected).is_err());
     }
-    let mut reply: Reply = miniserde::json::from_str(PAID).unwrap();
+    let mut reply: Reply = serde_json::from_str(PAID).unwrap();
     reply.id = "../escape".into();
     assert!(Stripe::reduce(reply, "payment_intents", None).is_err());
 }
@@ -546,5 +542,37 @@ async fn deeply_nested_provider_actions_cannot_panic_or_prove_payment() {
         .unwrap();
     assert_eq!(result.state, State::Unknown);
     assert!(result.member_action.is_none());
+    assert_eq!(calls.await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn member_actions_are_projected_without_unneeded_provider_details() {
+    let nested = format!("{}null{}", "[".repeat(160), "]".repeat(160));
+    let body = format!(
+        r#"{{"id":"pi_fixture","object":"payment_intent","status":"requires_action","client_secret":"member-secret","next_action":{{"type":"fixture"}},"billing_details":{nested},"customer":"discard-this"}}"#
+    );
+    let (url, calls) = server(vec![&body]).await;
+    let mut adapter = adapter();
+    adapter.client = ClientBuilder::new("sk_test_fixture")
+        .url(format!("{url}/"))
+        .build()
+        .unwrap();
+    let result = adapter
+        .execute(
+            &request("stripe.intent.create", serde_json::json!({})),
+            "key",
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.state, State::RequiresAction);
+    assert_eq!(
+        serde_json::from_slice::<Value>(result.member_action.unwrap().expose()).unwrap(),
+        serde_json::json!({"client_secret":"member-secret","next_action":{"type":"fixture"}})
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(result.continuation.unwrap().expose()).unwrap(),
+        serde_json::json!({"id":"pi_fixture","resource":"payment_intents"})
+    );
     assert_eq!(calls.await.unwrap().len(), 1);
 }
