@@ -128,6 +128,7 @@ async fn refunds_and_recurring_arrangements_report_distinct_facts() {
         r#"{"id":"re_fixture","object":"refund","status":"succeeded"}"#,
         r#"{"id":"sub_fixture","object":"subscription","status":"trialing"}"#,
         r#"{"id":"sub_fixture","object":"subscription","status":"canceled"}"#,
+        r#"{"id":"sub_fixture","object":"subscription","status":"canceled"}"#,
     ])
     .await;
     let mut adapter = adapter();
@@ -172,17 +173,25 @@ async fn refunds_and_recurring_arrangements_report_distinct_facts() {
             .state,
         State::Cancelled
     );
+    assert_eq!(
+        adapter
+            .execute(
+                &request(
+                    "stripe.subscription.cancel",
+                    serde_json::json!({"prorate":true})
+                ),
+                "cancel-with-terms",
+                active.continuation.as_ref()
+            )
+            .await
+            .unwrap()
+            .state,
+        State::Cancelled
+    );
     let calls = calls.await.unwrap();
     assert!(calls[0].contains("payment_intent=pi_fixture"));
-    assert!(calls[2].starts_with("DELETE "));
-    assert_eq!(
-        calls[2]
-            .split_whitespace()
-            .nth(1)
-            .unwrap()
-            .trim_end_matches('?'),
-        "/v1/subscriptions/sub_fixture"
-    );
+    assert!(calls[2].starts_with("DELETE /v1/subscriptions/sub_fixture "));
+    assert!(calls[3].starts_with("DELETE /v1/subscriptions/sub_fixture?prorate=true "));
 }
 
 #[tokio::test]
