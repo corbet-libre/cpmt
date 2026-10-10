@@ -45,14 +45,16 @@ pub(crate) fn classify(state: State, required: State) -> cost::Outcome {
 pub(crate) fn validate_tasks<'a>(
     plan: &cost::Plan<String, String>,
     tasks: impl IntoIterator<Item = (&'a Instruction, State)>,
-) -> Result<()> {
+) -> Result<Vec<usize>> {
     let tasks: Vec<_> = tasks.into_iter().collect();
     let mut context = None;
+    let mut selected = Vec::new();
     for offer in plan.offers() {
         let mut matching = tasks
             .iter()
-            .filter(|(i, _)| i.adapter == offer.candidate.id);
-        let (instruction, requires) = matching.next().ok_or(Error::Invalid)?;
+            .enumerate()
+            .filter(|(_, (i, _))| i.adapter == offer.candidate.id);
+        let (index, (instruction, requires)) = matching.next().ok_or(Error::Invalid)?;
         if matching.next().is_some()
             || context.is_some_and(|(binding, required)| {
                 binding != &instruction.binding || required != *requires
@@ -62,8 +64,9 @@ pub(crate) fn validate_tasks<'a>(
             return Err(Error::Invalid);
         }
         context = Some((&instruction.binding, *requires));
+        selected.push(index);
     }
-    Ok(())
+    Ok(selected)
 }
 
 impl<J: Journal> Payments<J> {
@@ -78,12 +81,9 @@ impl<J: Journal> Payments<J> {
         disclosure: Disclosure,
     ) -> Report {
         let preflight = validate_tasks(&plan, tasks.iter().map(|t| (&t.instruction, t.requires)))
-            .and_then(|()| {
-                for offer in plan.offers() {
-                    let task = tasks
-                        .iter()
-                        .find(|t| t.instruction.adapter == offer.candidate.id)
-                        .ok_or(Error::Invalid)?;
+            .and_then(|selected| {
+                for (offer, index) in plan.offers().iter().zip(&selected) {
+                    let task = &tasks[*index];
                     let quote = self.preview(
                         &task.instruction,
                         offer.quote.price.clone(),
@@ -94,37 +94,42 @@ impl<J: Journal> Payments<J> {
                         return Err(Error::Rejected);
                     }
                 }
-                Ok(())
+                Ok(selected)
             });
-        if let Err(error) = preflight {
-            return Report {
-                attempts: Vec::new(),
-                exposure: cost::Amount {
-                    unit: plan.budget().unit.clone(),
-                    atoms: 0,
-                },
-                stop: Stop::Domain(error),
-            };
-        }
+        let selected = match preflight {
+            Ok(selected) => selected,
+            Err(error) => {
+                return Report {
+                    attempts: Vec::new(),
+                    exposure: cost::Amount {
+                        unit: plan.budget().unit.clone(),
+                        atoms: 0,
+                    },
+                    stop: Stop::Domain(error),
+                };
+            }
+        };
         let mut cascade = plan.start();
         let mut attempts = Vec::new();
-        let stop = loop {
+        let mut stop = Stop::Outcome(cost::Outcome::SafeFailure);
+        for index in selected {
             let permit = match cascade.begin(now) {
                 Ok(permit) => permit,
-                Err(error) => break Stop::Plan(error),
+                Err(error) => {
+                    stop = Stop::Plan(error);
+                    break;
+                }
             };
-            let Some(task) = tasks
-                .iter()
-                .find(|t| &t.instruction.adapter == permit.candidate())
-            else {
-                break Stop::Domain(Error::Invalid);
-            };
+            let task = &tasks[index];
             let result = match self
                 .dispatch_with_output(&task.instruction, permit, now, disclosure)
                 .await
             {
                 Ok(result) => result,
-                Err(error) => break Stop::Domain(error),
+                Err(error) => {
+                    stop = Stop::Domain(error);
+                    break;
+                }
             };
             let outcome = classify(result.outcome.state(), task.requires);
             let actual = result.cost.actual.map(|atoms| cost::Amount {
@@ -136,12 +141,14 @@ impl<J: Journal> Payments<J> {
             });
             attempts.push(result);
             if let Err(error) = cascade.complete(outcome, actual) {
-                break Stop::Plan(error);
+                stop = Stop::Plan(error);
+                break;
             }
             if outcome != cost::Outcome::SafeFailure {
-                break Stop::Outcome(outcome);
+                stop = Stop::Outcome(outcome);
+                break;
             }
-        };
+        }
         Report {
             attempts,
             exposure: cascade.exposure(),

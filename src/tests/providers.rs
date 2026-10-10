@@ -1051,3 +1051,51 @@ impl Rest {
         Adapter::observe(self, &auth, previous).await
     }
 }
+
+#[tokio::test]
+async fn configured_modes_and_action_kinds_are_checked_before_transport() {
+    for (provider, mode) in [
+        (Provider::GoCardless { sandbox: false }, Mode::Simulation),
+        (
+            Provider::Square {
+                sandbox: true,
+                version: "2026-09-16".into(),
+            },
+            Mode::Production,
+        ),
+    ] {
+        assert!(
+            Rest::new(
+                "fixture".into(),
+                provider,
+                Private::new(b"fixture-secret".to_vec()),
+                limits(),
+                mode
+            )
+            .is_err()
+        );
+    }
+    let adapter = adapter(Provider::GoCardless { sandbox: false });
+    assert_eq!(Adapter::mode(&adapter), Mode::Production);
+    let mut request = instruction("gocardless.payment.create", terms(&adapter.provider));
+    request.kind = Action::Observe;
+    let dispatch = Dispatch::new(
+        &request,
+        crate::test_support::permit(&request, Mode::Production),
+        0,
+    )
+    .unwrap();
+    assert!(
+        Adapter::execute(&adapter, &dispatch, "key", None)
+            .await
+            .is_err()
+    );
+    request.kind = Action::Execute;
+    let dispatch = Dispatch::new(
+        &request,
+        crate::test_support::permit(&request, Mode::Production),
+        0,
+    )
+    .unwrap();
+    assert!(Adapter::observe(&adapter, &dispatch, None).await.is_err());
+}

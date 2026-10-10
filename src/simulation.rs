@@ -42,46 +42,41 @@ pub fn simulate(plan: cost::Plan<String, String>, fixtures: &[Fixture], now: u64
             stop: Stop::Plan(cost::Error::Binding),
         };
     }
-    if let Err(error) = validate_tasks(&plan, fixtures.iter().map(|f| (&f.instruction, f.requires)))
-    {
-        return Simulation {
-            states: Vec::new(),
-            exposure: cost::Amount {
-                unit: plan.budget().unit.clone(),
-                atoms: 0,
-            },
-            stop: Stop::Domain(error),
+    let selected =
+        match validate_tasks(&plan, fixtures.iter().map(|f| (&f.instruction, f.requires))) {
+            Ok(selected) => selected,
+            Err(error) => {
+                return Simulation {
+                    states: Vec::new(),
+                    exposure: cost::Amount {
+                        unit: plan.budget().unit.clone(),
+                        atoms: 0,
+                    },
+                    stop: Stop::Domain(error),
+                };
+            }
         };
-    }
     let mut cascade = plan.start();
     let mut states = Vec::new();
-    let stop = loop {
-        let permit = match cascade.begin(now) {
-            Ok(permit) => permit,
-            Err(error) => break Stop::Plan(error),
-        };
-        let Some(fixture) = fixtures
-            .iter()
-            .find(|f| &f.instruction.adapter == permit.candidate())
-        else {
-            break Stop::Plan(cost::Error::Binding);
-        };
-        if let Err(error) = permit.validate(
-            &cost::binding(&fixture.instruction, cost::Mode::Simulation),
-            cost::Mode::Simulation,
-            now,
-        ) {
-            break Stop::Plan(error);
+    let mut stop = Stop::Outcome(cost::Outcome::SafeFailure);
+    for index in selected {
+        if let Err(error) = cascade.begin(now) {
+            stop = Stop::Plan(error);
+            break;
         }
+
+        let fixture = &fixtures[index];
         states.push(fixture.state);
         let outcome = classify(fixture.state, fixture.requires);
         if let Err(error) = cascade.complete(outcome, fixture.actual_cost.clone()) {
-            break Stop::Plan(error);
+            stop = Stop::Plan(error);
+            break;
         }
         if outcome != cost::Outcome::SafeFailure {
-            break Stop::Outcome(outcome);
+            stop = Stop::Outcome(outcome);
+            break;
         }
-    };
+    }
     Simulation {
         states,
         exposure: cascade.exposure(),

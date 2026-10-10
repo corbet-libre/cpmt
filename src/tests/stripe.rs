@@ -699,3 +699,114 @@ async fn financial_projection_and_complete_private_sdk_results_use_real_response
         500
     );
 }
+
+#[tokio::test]
+async fn actual_mode_action_and_timeout_edges_cannot_mint_success() {
+    assert!(
+        Stripe::new(
+            "stripe".into(),
+            Private::new(b"sk_test_fixture".to_vec()),
+            Duration::from_secs(1),
+            8192,
+            Mode::Simulation
+        )
+        .is_err()
+    );
+    for (timeout, max, mode) in [
+        (Duration::ZERO, 8192, Mode::Production),
+        (Duration::from_secs(1), 0, Mode::Production),
+        (Duration::from_secs(1), 8192, Mode::Simulation),
+    ] {
+        assert!(
+            Stripe::from_client(
+                "stripe".into(),
+                ClientBuilder::new("sk_test_fixture").build().unwrap(),
+                timeout,
+                max,
+                mode
+            )
+            .is_err()
+        );
+    }
+    let adapter = adapter();
+    assert_eq!(Adapter::mode(&adapter), Mode::Sandbox);
+    let mut instruction = request("stripe.intent.create", serde_json::json!({}));
+    instruction.kind = Action::Observe;
+    let dispatch = Dispatch::new(
+        &instruction,
+        crate::test_support::permit(&instruction, Mode::Sandbox),
+        0,
+    )
+    .unwrap();
+    assert!(
+        Adapter::execute(&adapter, &dispatch, "key", None)
+            .await
+            .is_err()
+    );
+    instruction.kind = Action::Execute;
+    let dispatch = Dispatch::new(
+        &instruction,
+        crate::test_support::permit(&instruction, Mode::Sandbox),
+        0,
+    )
+    .unwrap();
+    assert!(Adapter::observe(&adapter, &dispatch, None).await.is_err());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    let stall = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            stream.read_to_end(&mut bytes).await.unwrap();
+            assert!(!bytes.is_empty());
+        }
+    });
+    let adapter = Stripe::from_client(
+        "stripe".into(),
+        ClientBuilder::new("sk_test_fixture")
+            .url(url)
+            .build()
+            .unwrap(),
+        Duration::from_millis(100),
+        8192,
+        Mode::Sandbox,
+    )
+    .unwrap();
+    assert_eq!(
+        adapter
+            .execute(&instruction, "key", None)
+            .await
+            .unwrap()
+            .state,
+        State::Unknown
+    );
+    let previous = Private::new(br#"{"resource":"payment_intents","id":"pi_fixture"}"#.to_vec());
+    let observed = adapter
+        .observe("stripe.intent.create", Some(&previous))
+        .await
+        .unwrap();
+    assert_eq!(observed.state, State::Unknown);
+    assert!(observed.continuation.is_some());
+    stall.await.unwrap();
+    let (url, calls) = server(vec!["{}"]).await;
+    let adapter = Stripe::from_client(
+        "stripe".into(),
+        ClientBuilder::new("sk_test_fixture")
+            .url(format!("{url}/"))
+            .build()
+            .unwrap(),
+        Duration::from_secs(1),
+        8192,
+        Mode::Sandbox,
+    )
+    .unwrap();
+    assert!(
+        adapter
+            .observe("stripe.intent.create", Some(&previous))
+            .await
+            .unwrap()
+            .continuation
+            .is_some()
+    );
+    assert_eq!(calls.await.unwrap().len(), 1);
+}

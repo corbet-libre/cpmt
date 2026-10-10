@@ -47,6 +47,51 @@ impl PaidAccess {
     }
 }
 
+/// Explicit dummy access transformation. This is data, never production evidence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SimulatedAccess {
+    /// Caller-selected level after the actual domain validation.
+    pub level: String,
+    /// Requested interval capped by the supplied dummy provider expiry.
+    pub period: Period,
+}
+fn project(request: Request, provider_until: Option<u64>, now: u64) -> Result<SimulatedAccess> {
+    crate::payments::identifier(&request.level)?;
+    if request.period.start >= request.period.end {
+        return Err(Error::Rejected);
+    }
+    let end = provider_until.map_or(request.period.end, |limit| request.period.end.min(limit));
+    if request.period.start >= end || now >= end {
+        return Err(Error::Expired);
+    }
+    Ok(SimulatedAccess {
+        level: request.level,
+        period: Period {
+            start: request.period.start,
+            end,
+        },
+    })
+}
+/// Apply the real paid-access transformation to explicit dummy facts, with no I/O.
+/// This result has no evidence conversion and cannot be used as a production gate.
+pub fn simulate_access(
+    request: Request,
+    state: State,
+    satisfies_terms: bool,
+    provider_until: Option<u64>,
+    now: u64,
+) -> Result<SimulatedAccess> {
+    if !satisfies_terms
+        || request.requires != state
+        || matches!(
+            state,
+            State::Pending | State::RequiresAction | State::Unknown | State::Failed
+        )
+    {
+        return Err(Error::Rejected);
+    }
+    project(request, provider_until, now)
+}
 impl<J: Journal> Payments<J> {
     /// Project only a result that established this exact instruction's financial
     /// terms. Complete upstream JSON cannot be substituted for an `Outcome`.
@@ -57,13 +102,10 @@ impl<J: Journal> Payments<J> {
         request: Request,
         now: u64,
     ) -> Result<PaidAccess> {
-        crate::payments::identifier(&request.level)?;
-        if request.period.start >= request.period.end
-            || !outcome.matches_request(
-                instruction,
-                self.instruction_digest(instruction, outcome.mode()),
-            )
-        {
+        if !outcome.matches_request(
+            instruction,
+            self.instruction_digest(instruction, outcome.mode()),
+        ) {
             return Err(Error::Rejected);
         }
         let evidence = outcome.evidence(
@@ -73,16 +115,11 @@ impl<J: Journal> Payments<J> {
             request.period.end,
         )?;
         let (_, end) = evidence.in_context(&instruction.binding, now)?;
-        if request.period.start >= end {
-            return Err(Error::Expired);
-        }
+        let projected = project(request, Some(end), now)?;
         Ok(PaidAccess {
             evidence,
-            level: request.level,
-            period: Period {
-                start: request.period.start,
-                end,
-            },
+            level: projected.level,
+            period: projected.period,
         })
     }
 }

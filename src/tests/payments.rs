@@ -933,3 +933,118 @@ fn actual_cost_never_exceeds_reserved_units_and_fallback_keeps_uncertainty() {
         assert_eq!(crate::run::classify(state, state), resolution);
     }
 }
+
+#[tokio::test]
+async fn snapshots_reads_and_caller_budget_keep_environment_and_unknown_exposure() {
+    let journal = MemoryJournal::default();
+    let (payments, _) = setup(journal.clone(), false);
+    let request = request();
+    let mut outcome = payments.execute(&request, 1).await.unwrap().outcome;
+    assert!(outcome.satisfies_terms());
+    outcome.0.sandbox = true;
+    assert_eq!(outcome.mode(), Mode::Sandbox);
+    assert!(
+        outcome
+            .evidence(&request.binding, State::Collected, 1, 30)
+            .is_err()
+    );
+    outcome.0.id = [8; 32];
+    assert!(!outcome.matches_request(&request, outcome.0.request_digest));
+    outcome.0.id = request.id;
+    outcome.0.binding.subject.push('x');
+    assert!(!outcome.matches_request(&request, outcome.0.request_digest));
+    for evidence in [false, true] {
+        let mut read = payments
+            .observation(&request.id, &request.binding, [8; 32], 100)
+            .await
+            .unwrap();
+        if evidence {
+            read.evidence = Private::new(vec![1]);
+        } else {
+            read.terms = Private::new(vec![1]);
+        }
+        assert!(
+            payments
+                .preview(&read, Price::Unknown, "fixture".into(), 100)
+                .is_err()
+        );
+    }
+    let mut read = payments
+        .observation(&request.id, &request.binding, [9; 32], 100)
+        .await
+        .unwrap();
+    read.operation = "refund".into();
+    assert_eq!(
+        payments.execute(&read, 1).await.err(),
+        Some(Error::Rejected)
+    );
+    {
+        journal
+            .0
+            .lock()
+            .unwrap()
+            .records
+            .values_mut()
+            .find(|r| r.outcome.id == request.id)
+            .unwrap()
+            .outcome
+            .sandbox = true;
+    }
+    let read = payments
+        .observation(&request.id, &request.binding, [10; 32], 100)
+        .await
+        .unwrap();
+    assert_eq!(
+        payments.execute(&read, 1).await.err(),
+        Some(Error::Rejected)
+    );
+    payments
+        .forget(&request.id, &request.binding)
+        .await
+        .unwrap();
+    payments
+        .forget(&request.id, &request.binding)
+        .await
+        .unwrap();
+    let budget = cost::Amount {
+        unit: cost::Unit {
+            code: "fee".into(),
+            scale: 2,
+        },
+        atoms: 10,
+    };
+    let (uncertain, calls) = setup(MemoryJournal::with_budget(budget.clone()), true);
+    assert_eq!(
+        uncertain
+            .dispatch(&request, priced(&request, Mode::Production, 7), 1)
+            .await
+            .err(),
+        Some(Error::Rejected)
+    );
+    let mut second = self::request();
+    second.id = [11; 32];
+    assert_eq!(
+        uncertain
+            .dispatch(&second, priced(&second, Mode::Production, 7), 1)
+            .await
+            .err(),
+        Some(Error::Cost)
+    );
+    assert_eq!(calls.calls.load(Ordering::SeqCst), 1);
+    let mut wrong = budget;
+    wrong.unit.scale = 1;
+    let (other, _) = setup(MemoryJournal::with_budget(wrong), false);
+    assert_eq!(
+        other
+            .dispatch(&request, priced(&request, Mode::Production, 7), 1)
+            .await
+            .err(),
+        Some(Error::Cost)
+    );
+    let permit = priced(&request, Mode::Simulation, 0);
+    assert!(cost::validate(&request, "test", Mode::Simulation, &permit, 1).is_err());
+    let mut zero = self::request();
+    zero.id = [0; 32];
+    let permit = priced(&zero, Mode::Production, 0);
+    assert!(cost::validate(&zero, "test", Mode::Production, &permit, 1).is_err());
+}

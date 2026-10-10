@@ -316,3 +316,46 @@ fn simulation_uses_real_budget_fallback_and_binding_without_production_proofs() 
         Stop::Plan(cost::Error::Charge)
     );
 }
+
+#[tokio::test]
+async fn replayed_actual_fee_cannot_fit_a_smaller_replanned_quote() {
+    let tasks = tasks();
+    let (payments, _) = setup(
+        [State::Collected; 2],
+        Some(2),
+        cost::Mode::Production,
+        false,
+    );
+    assert_eq!(
+        payments
+            .run(
+                plan(&tasks, cost::Mode::Production, 10, 100),
+                &tasks,
+                1,
+                Disclosure::Minimal
+            )
+            .await
+            .stop,
+        Stop::Outcome(cost::Outcome::Success)
+    );
+    let original = plan(&tasks, cost::Mode::Production, 10, 100);
+    let mut offers = original.offers().to_vec();
+    offers[0].quote.price = cost::Price::Exact(fee(1));
+    let cheaper = cost::Plan::new(
+        offers,
+        cost::Config::new(["first".into(), "second".into()], ["collect".into()]),
+        cost::CostOrder::Configured,
+        fee(10),
+        2,
+        cost::Mode::Production,
+        0,
+    )
+    .unwrap();
+    assert_eq!(
+        payments
+            .run(cheaper, &tasks, 1, Disclosure::Minimal)
+            .await
+            .stop,
+        Stop::Plan(cost::Error::Charge)
+    );
+}

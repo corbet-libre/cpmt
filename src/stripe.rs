@@ -292,6 +292,7 @@ impl Stripe {
                     reply.amount_capturable,
                     reply.currency.clone(),
                 );
+                let id = reply.id.clone();
                 let mut observation = Self::reduce(reply, resource, expected)?;
                 if let Some(terms) = financial {
                     observation.satisfies_terms = terms.satisfied(
@@ -301,13 +302,14 @@ impl Stripe {
                         money.3.as_deref(),
                         observation.state,
                     );
-                    if let Some(retained) = observation.continuation.as_ref() {
-                        let mut value = reference(retained)?;
-                        value.financial = Some(terms.clone());
-                        observation.continuation = Some(Private::new(
-                            serde_json::to_vec(&value).expect("reference serializes"),
-                        ));
-                    }
+                    observation.continuation = Some(Private::new(
+                        serde_json::to_vec(&Reference {
+                            resource: resource.into(),
+                            id,
+                            financial: Some(terms.clone()),
+                        })
+                        .expect("reference serializes"),
+                    ));
                 }
                 Ok(observation)
             })

@@ -105,3 +105,45 @@ async fn invalid_levels_periods_and_unestablished_financial_facts_do_not_grant_a
             .is_err()
     );
 }
+
+#[test]
+fn simulation_uses_the_real_level_interval_transformation_but_produces_no_evidence() {
+    let simulated = simulate_access(access(), State::Collected, true, Some(50), 1).unwrap();
+    assert_eq!(
+        simulated,
+        SimulatedAccess {
+            level: "supporter".into(),
+            period: Period { start: 1, end: 50 }
+        }
+    );
+    assert_eq!(
+        simulate_access(access(), State::Collected, true, None, 1)
+            .unwrap()
+            .period
+            .end,
+        80
+    );
+    for (state, satisfies) in [
+        (State::Pending, true),
+        (State::RequiresAction, true),
+        (State::Unknown, true),
+        (State::Failed, true),
+        (State::Collected, false),
+    ] {
+        assert!(
+            simulate_access(
+                Request {
+                    requires: state,
+                    ..access()
+                },
+                state,
+                satisfies,
+                None,
+                1
+            )
+            .is_err()
+        );
+    }
+    assert!(simulate_access(access(), State::Authorized, true, None, 1).is_err());
+    assert!(simulate_access(access(), State::Collected, true, None, 80).is_err());
+}

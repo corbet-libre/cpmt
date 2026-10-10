@@ -813,10 +813,7 @@ impl<J: Journal> Payments<J> {
         record.outcome.valid_until = observation.valid_until;
         record.outcome.satisfies_terms = observation.satisfies_terms;
         record.cost.report(observation.actual_cost.as_ref())?;
-        // Every observation explicitly supplies what is still needed. None erases it.
-        if let Some(mut bytes) = record.continuation.take() {
-            bytes.zeroize();
-        }
+        // This fresh immutable operation has no prior continuation to overwrite.
         record.continuation = observation.continuation.map(|p| p.expose().to_vec());
         record.outcome.receipt = observation.claim.as_ref().map(|claim| {
             let bytes = Zeroizing::new(
