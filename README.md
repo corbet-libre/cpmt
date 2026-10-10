@@ -49,3 +49,7 @@ operation markers for the lifetime of their IDs. No live payment tests or creden
 See [the contract](docs/CONTRACT.md) for adapter and integration obligations.
 See [service credentials](docs/CREDENTIALS.md) for injection, token refresh,
 account boundaries and the stable journal key.
+
+Additional built-in collection adapters: [Mollie, Square, GoCardless, BTCPay and CoinGate](docs/PROVIDERS.md)
+under the optional `providers` feature. The external policy layer selects what
+is offered; credentials and provider accounts are supplied by the host.

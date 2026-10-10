@@ -832,3 +832,118 @@ async fn transport_failures_never_retry_or_mint_a_claim() {
         .is_err()
     );
 }
+
+#[tokio::test]
+async fn oauth_test_mode_stays_with_the_adapter_and_member_tokens_do_not_override_terms() {
+    let provider = Provider::Mollie {
+        test_mode: Some(true),
+    };
+    let mut pending = object(&provider, "open");
+    pending["_links"] = json!({"checkout":{"href":"https://checkout.example/private"}});
+    let (base, calls) = server(vec![
+        http(pending.clone()),
+        http(pending.clone()),
+        http(pending),
+    ])
+    .await;
+    let a = local(provider, base);
+    let mut request = instruction("mollie.payment.create", terms(&a.provider));
+    request.evidence = Private::new(b"\"member-token\"".to_vec());
+    let result = a.execute(&request, "key", None).await.unwrap();
+    assert!(result.member_action.is_some());
+    a.observe(&request.operation, result.continuation.as_ref())
+        .await
+        .unwrap();
+    a.execute(
+        &instruction("mollie.payment.cancel", json!({})),
+        "cancel",
+        result.continuation.as_ref(),
+    )
+    .await
+    .unwrap();
+    let calls = calls.await.unwrap();
+    assert!(calls[0].contains("\"testmode\":true"));
+    assert!(calls[0].contains("member-token"));
+    assert!(calls[1].starts_with("GET /payments/id_123?testmode=true "));
+    assert!(calls[2].starts_with("DELETE /payments/id_123?testmode=true "));
+    let mut t = terms(&a.provider);
+    t["testmode"] = json!(false);
+    assert!(
+        a.execute(&instruction("mollie.payment.create", t), "key", None)
+            .await
+            .is_err()
+    );
+    let a = adapter(Provider::Mollie {
+        test_mode: Some(false),
+    });
+    assert_eq!(
+        a.provider
+            .prepare(
+                "payment.create",
+                terms(&a.provider).as_object().unwrap().clone(),
+                "k",
+                None
+            )
+            .unwrap()
+            .body["testmode"],
+        false
+    );
+    for field in ["applicationFee", "app_fee"] {
+        assert!(forbidden(&json!({field: {"amount":1}})));
+    }
+}
+#[test]
+fn validated_partial_ids_survive_without_claims_and_holds_keep_expiry() {
+    for (provider, status, field) in [
+        (
+            Provider::Mollie { test_mode: None },
+            "authorized",
+            "captureBefore",
+        ),
+        (providers().remove(2), "APPROVED", "delayed_until"),
+    ] {
+        let a = adapter(provider);
+        let prep = a.provider.read(&reference("payments")).unwrap();
+        let mut value = object(&a.provider, status);
+        value[field] = json!("2030-01-01T00:00:00Z");
+        let result = a
+            .reduce(wrap(&a.provider, "payments", value.clone()), &prep)
+            .unwrap();
+        assert_eq!(result.valid_until, Some(1893456000));
+        value.as_object_mut().unwrap().remove(field);
+        assert_eq!(
+            a.reduce(wrap(&a.provider, "payments", value.clone()), &prep)
+                .unwrap()
+                .valid_until,
+            None
+        );
+        for expiry in [json!(false), json!("bad"), json!("1960-01-01T00:00:00Z")] {
+            value[field] = expiry;
+            let result = a
+                .reduce(wrap(&a.provider, "payments", value.clone()), &prep)
+                .unwrap();
+            assert_eq!(result.state, State::Unknown);
+            assert!(result.claim.is_none());
+            assert!(result.continuation.is_some());
+        }
+        value.as_object_mut().unwrap().remove(field);
+        let expected = Amount {
+            value: "20".into(),
+            currency: "CHF".into(),
+        };
+        let prep = Prepared {
+            amount: expected,
+            ..prep
+        };
+        let result = a
+            .reduce(wrap(&a.provider, "payments", value), &prep)
+            .unwrap();
+        assert_eq!(result.state, State::Unknown);
+        assert!(result.claim.is_none());
+        assert!(result.continuation.is_some());
+    }
+    let gc = Provider::GoCardless { sandbox: false };
+    let mut refund = object(&gc, "paid");
+    refund["currency"] = json!("EUR");
+    assert!(gc.state(&refund, "refunds", &amount()).is_err());
+}

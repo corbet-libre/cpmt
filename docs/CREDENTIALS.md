@@ -99,3 +99,29 @@ credentials, live charges, verification ceremonies and provider registrations
 are outside those tests. Owned secret buffers are zeroized where possible;
 third-party SDK, HTTP and parser copies may exist transiently. Do not claim
 complete process-memory erasure.
+
+## Additional built-in providers
+
+The optional `providers` feature uses the same host injection contract. The host
+passes one secret as `Private` to `providers::Rest::new`; public endpoint/store,
+sandbox/test mode and API version settings live in its `Provider` configuration.
+
+| Provider | Secret source/format | Public configuration and scope |
+|---|---|---|
+| Mollie | Profile API key or refreshed OAuth access token; library adds Bearer | Profile key: test mode `None`; OAuth: explicit `Some(bool)`. Limit permissions to payments/refunds actually offered. |
+| Square | Account access token or refreshed OAuth access token; library adds Bearer | Sandbox choice and API version date. Use payment read/write and refund permissions only as needed. |
+| GoCardless | Operator account access token; library adds Bearer | Sandbox choice. Mandate references are authenticated operational input, not credentials supplied by arbitrary member evidence. |
+| BTCPay Server | Store-scoped Greenfield API key; library adds `token` | Explicit HTTPS instance and operator store ID. Invoice-create/view permissions; no wallet private key or payout access. |
+| CoinGate | API application token; library adds `Token` | Sandbox choice, operator-owned API application. Checkout handles provider/KYC interaction privately. |
+
+The host obtains OAuth grants and refreshes tokens with its chosen maintained
+identity client; these payment adapters never run an authorization-code flow or
+store refresh credentials. Replace the configured adapter/client after refresh
+while preserving its account identity and journal access. Drain in-flight calls
+before removing old credentials. Mollie deduplication is credential-bound and
+lasts one hour; rotation must never cause a journaled operation to execute again.
+
+See [PROVIDERS.md](PROVIDERS.md) for native terms, required parent references,
+implemented operations and provider-specific limitations. Each installation
+selects credentials explicitly; installing the feature does not enable a service,
+register an account, create a webhook or activate a payment offer.
