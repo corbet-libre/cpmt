@@ -23,7 +23,7 @@ flock -w "${CI_TIMEOUT:-2700}" 9
 mkdir -p "$state/moon-cache/hashes" "$state/moon-cache/outputs" "$state/moon-home"
 mkdir -p .moon/cache
 tool_source=github:NixOS/nixpkgs/b7c2ada94fe99c15b0dbcf4d11fd7850b957a436
-tool_paths=$(nix build --no-link --print-out-paths "$tool_source#moon" "$tool_source#proto" "$tool_source#python3" "$tool_source#nodejs_24" "$tool_source#curl" "$tool_source#cargo-llvm-cov")
+tool_paths=$(nix build --no-link --print-out-paths "$tool_source#moon" "$tool_source#proto" "$tool_source#python3" "$tool_source#nodejs_24" "$tool_source#curl" "$tool_source#cargo-llvm-cov" "$tool_source#cargo-deny")
 for path in $tool_paths; do PATH="$path/bin:$PATH"; done
 export PROTO_HOME="$toolchains/proto" RUSTUP_HOME="$toolchains/rustup"
 export CARGO_HOME="$toolchains/cargo" MOON_HOME="$state/moon-home"
