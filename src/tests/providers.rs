@@ -966,7 +966,15 @@ fn money_parsing_never_rounds_json_or_excess_decimal_precision() {
     let value: Value =
         serde_json::from_str(r#"{"price_amount":1.0000000000000000001,"price_currency":"CHF"}"#)
             .unwrap();
-    let actual = provider.amount(&value).unwrap();
+    let actual = provider
+        .prepare(
+            "order.create",
+            value.as_object().unwrap().clone(),
+            "key",
+            None,
+        )
+        .unwrap()
+        .amount;
     assert_eq!(actual.value, "1.0000000000000000001");
     assert!(!actual.matches(Amount {
         value: "1".into(),
@@ -976,7 +984,16 @@ fn money_parsing_never_rounds_json_or_excess_decimal_precision() {
         r#"{"price_amount":1.00000000000000000000000000001,"price_currency":"CHF"}"#,
     )
     .unwrap();
-    assert!(provider.amount(&excess).is_err());
+    assert!(
+        provider
+            .prepare(
+                "order.create",
+                excess.as_object().unwrap().clone(),
+                "key",
+                None
+            )
+            .is_err()
+    );
     assert!(
         Amount {
             value: "1.00000000000000000000000000001".into(),

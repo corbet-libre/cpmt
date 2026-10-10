@@ -10,7 +10,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
-use std::{str::FromStr, time::Duration};
+use std::time::Duration;
 use tracing::instrument::WithSubscriber;
 use zeroize::Zeroizing;
 mod profile;
