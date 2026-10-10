@@ -227,7 +227,8 @@ impl Adapter for Stripe {
             }
         };
         match tokio::time::timeout(self.timeout, future).await {
-            Ok(Ok(reply)) => Self::reduce(reply, resource, expected),
+            Ok(Ok(reply)) => Ok(Self::reduce(reply, resource, expected)
+                .unwrap_or_else(|_| Observation::fact(State::Unknown))),
             // A transport/server/decoding error cannot prove that nothing happened.
             _ => Ok(Observation::fact(State::Unknown)),
         }

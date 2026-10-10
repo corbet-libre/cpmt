@@ -166,7 +166,15 @@ async fn refunds_and_recurring_arrangements_report_distinct_facts() {
     );
     let calls = calls.await.unwrap();
     assert!(calls[0].contains("payment_intent=pi_fixture"));
-    assert!(calls[2].starts_with("DELETE /v1/subscriptions/sub_fixture "));
+    assert!(calls[2].starts_with("DELETE "));
+    assert_eq!(
+        calls[2]
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .trim_end_matches('?'),
+        "/v1/subscriptions/sub_fixture"
+    );
 }
 
 #[tokio::test]
