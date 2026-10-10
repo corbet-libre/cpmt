@@ -16,11 +16,11 @@ change domain behavior. Add meaningful failure and round-trip tests. Document
 any genuinely unreachable defensive branch precisely before excluding it. Native
 coverage does not establish browser execution; keep the actual wasm vectors.
 
-First-party dependencies follow main. Their resolved full revisions remain in
-Cargo.lock, with exactly one source per first-party crate. Dependabot maintains
-committed snapshots; CI refreshes once per run and retains the tested snapshot.
-Auto-merge requires protected main and successful substantive checks on the
-exact current Dependabot head. It never executes PR code with write permissions.
+First-party declarations follow main. Their resolved full revisions remain in
+Cargo.lock, with exactly one source per first-party crate. Final verification
+uses the committed resolution with --locked; it does not refresh dependencies.
+Dependency updates are separate candidates and must retain their tested lockfile.
+The coverage result applies to that exact source and dependency snapshot.
 
 ## Emitted source metric
 
