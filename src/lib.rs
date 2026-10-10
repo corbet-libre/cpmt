@@ -6,6 +6,8 @@
 #![forbid(unsafe_code)]
 
 pub mod payments;
+#[cfg(feature = "providers")]
+pub mod providers;
 #[cfg(feature = "storage")]
 pub mod storage;
 #[cfg(feature = "stripe")]

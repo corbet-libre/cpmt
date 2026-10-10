@@ -16,7 +16,7 @@ crate-type = ["rlib"]
 default = []
 stripe = ["dep:async-stripe", "dep:stripe-client-core", "dep:miniserde", "dep:tracing", "dep:tokio"]
 storage = ["dep:crlt"]
-prism = ["dep:prism-ffi", "dep:prism-types", "dep:prism-domain", "dep:prism-utils", "dep:reqwest", "dep:bytes", "dep:http", "dep:tracing"]
+providers = ["dep:reqwest", "dep:rust_decimal", "dep:tracing", "dep:base64"]
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -36,13 +36,9 @@ miniserde = { version = "0.1", optional = true }
 tracing = { version = "0.1", optional = true }
 tokio = { version = "1", features = ["time"], optional = true }
 crlt = { git = "https://git.corbet.ch/corbet-foss/crlt", branch = "main", optional = true }
-prism-ffi = { package = "ffi", git = "https://github.com/juspay/hyperswitch-prism", branch = "main", default-features = false, optional = true }
-prism-types = { package = "grpc-api-types", git = "https://github.com/juspay/hyperswitch-prism", branch = "main", optional = true }
-prism-domain = { package = "domain_types", git = "https://github.com/juspay/hyperswitch-prism", branch = "main", default-features = false, optional = true }
-prism-utils = { package = "ucs_common_utils", git = "https://github.com/juspay/hyperswitch-prism", branch = "main", optional = true }
-reqwest = { version = "0.13", default-features = false, features = ["rustls"], optional = true }
-bytes = { version = "1", optional = true }
-http = { version = "1", optional = true }
+rust_decimal = { version = "1", optional = true }
+base64 = { version = "0.23", optional = true }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"], optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tempfile = "3"
