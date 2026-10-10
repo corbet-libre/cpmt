@@ -18,7 +18,10 @@ mod profile;
 /// Built-in integrations. The core `Adapter` contract remains open to others.
 pub enum Provider {
     /// Mollie profile API key or OAuth bearer token.
-    Mollie,
+    Mollie {
+        /// OAuth test mode. Profile API keys require `None`.
+        test_mode: Option<bool>,
+    },
     /// GoCardless account access token; mandates are supplied by trusted terms.
     GoCardless {
         /// Explicit sandbox selection.
@@ -172,7 +175,15 @@ impl Rest {
         key: Option<&str>,
     ) -> Result<Value> {
         let url = self.base.join(path).map_err(|_| Error::Invalid)?;
+        let read = method == Method::GET || method == Method::DELETE;
         let mut request = self.client.request(method, url);
+        if let Provider::Mollie {
+            test_mode: Some(mode),
+        } = self.provider
+            && read
+        {
+            request = request.query(&[("testmode", mode)]);
+        }
         if let Some(body) = body {
             request = request.json(body);
         }
@@ -207,14 +218,14 @@ impl Rest {
         {
             return Err(Error::Rejected);
         }
-        if let Provider::Btcpay { store, .. } = &self.provider {
-            if object["storeId"].as_str() != Some(store) {
-                return Err(Error::Rejected);
-            }
+        if let Provider::Btcpay { store, .. } = &self.provider
+            && object["storeId"].as_str() != Some(store)
+        {
+            return Err(Error::Rejected);
         }
         if prepared.resource == "refunds" {
             let parent = match &self.provider {
-                Provider::Mollie => object.get("paymentId"),
+                Provider::Mollie { .. } => object.get("paymentId"),
                 Provider::Square { .. } => object.get("payment_id"),
                 _ => object.pointer("/links/payment"),
             }
@@ -226,12 +237,25 @@ impl Rest {
         }
         let state = self
             .provider
-            .state(object, prepared.resource, &prepared.amount)?;
+            .state(object, prepared.resource, &prepared.amount);
         let reference = Reference {
             resource: prepared.resource.into(),
             id: id.clone(),
             parent: prepared.parent.clone(),
             amount: prepared.amount.clone(),
+        };
+        // A real partial authorization still needs an ID for cancellation.
+        // It does not establish the requested amount or a spendable receipt.
+        let Ok(state) = state else {
+            return Ok(uncertain(Some(&reference)));
+        };
+        let valid_until = if state == State::Authorized {
+            match self.provider.authorization_expiry(object) {
+                Ok(expiry) => expiry,
+                Err(_) => return Ok(uncertain(Some(&reference))),
+            }
+        } else {
+            None
         };
         // IDs and expected amounts are the only retained provider fields.
         let continuation = encode(&reference);
@@ -245,7 +269,7 @@ impl Rest {
             .map(|action| Private::new(serde_json::to_vec(action).expect("JSON serializes")));
         Ok(Observation {
             state,
-            valid_until: None,
+            valid_until,
             continuation: Some(continuation),
             claim: Some(claim),
             member_action,
@@ -298,7 +322,7 @@ impl Adapter for Rest {
             .prepare(operation, terms, &key, parent.as_ref())?;
         let header_key = matches!(
             self.provider,
-            Provider::Mollie | Provider::GoCardless { .. }
+            Provider::Mollie { .. } | Provider::GoCardless { .. }
         )
         .then_some(key.as_str());
         let response = self
@@ -415,6 +439,8 @@ fn forbidden(value: &Value) -> bool {
             [
                 "transfer_data",
                 "on_behalf_of",
+                "applicationFee",
+                "app_fee",
                 "application_fee_amount",
                 "application_fee_percent",
                 "app_fee_money",
@@ -436,4 +462,5 @@ fn forbidden(value: &Value) -> bool {
     }
 }
 #[cfg(test)]
+#[path = "../tests/providers.rs"]
 mod tests;

@@ -16,7 +16,7 @@ crate-type = ["rlib"]
 default = []
 stripe = ["dep:async-stripe", "dep:stripe-client-core", "dep:miniserde", "dep:tracing", "dep:tokio"]
 storage = ["dep:crlt"]
-providers = ["dep:reqwest", "dep:rust_decimal", "dep:tracing", "dep:base64"]
+providers = ["dep:reqwest", "dep:rust_decimal", "dep:tracing", "dep:base64", "dep:time"]
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -37,6 +37,7 @@ tracing = { version = "0.1", optional = true }
 tokio = { version = "1", features = ["time"], optional = true }
 crlt = { git = "https://git.corbet.ch/corbet-foss/crlt", branch = "main", optional = true }
 rust_decimal = { version = "1", optional = true }
+time = { version = "0.3", features = ["parsing"], optional = true }
 base64 = { version = "0.23", optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"], optional = true }
 

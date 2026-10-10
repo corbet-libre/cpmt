@@ -2,7 +2,7 @@ use super::*;
 impl Provider {
     pub(super) fn name(&self) -> &'static str {
         match self {
-            Self::Mollie => "mollie",
+            Self::Mollie { .. } => "mollie",
             Self::Square { .. } => "square",
             Self::GoCardless { .. } => "gocardless",
             Self::Btcpay { .. } => "btcpay",
@@ -11,7 +11,7 @@ impl Provider {
     }
     pub(super) fn endpoint(&self) -> Result<(Url, &'static str)> {
         let (base, prefix) = match self {
-            Self::Mollie => ("https://api.mollie.com/v2/", "Bearer"),
+            Self::Mollie { .. } => ("https://api.mollie.com/v2/", "Bearer"),
             Self::GoCardless { sandbox } => (
                 if *sandbox {
                     "https://api-sandbox.gocardless.com/"
@@ -58,7 +58,7 @@ impl Provider {
     }
     pub(super) fn operations(&self) -> &'static [&'static str] {
         match self {
-            Self::Mollie | Self::GoCardless { .. } => {
+            Self::Mollie { .. } | Self::GoCardless { .. } => {
                 &["payment.create", "payment.cancel", "refund.create"]
             }
             Self::Square { .. } => &[
@@ -88,7 +88,7 @@ impl Provider {
             return Ok(());
         }
         let field = match (self, operation) {
-            (Self::Mollie, "payment.create") => "cardToken",
+            (Self::Mollie { .. }, "payment.create") => "cardToken",
             (Self::Square { .. }, "payment.create") => "source_id",
             _ => return Err(Error::Unsupported),
         };
@@ -100,7 +100,7 @@ impl Provider {
     }
     fn amount(&self, value: &Value) -> Result<Amount> {
         match self {
-            Self::Mollie => Amount::from(&value["amount"], "value", "currency"),
+            Self::Mollie { .. } => Amount::from(&value["amount"], "value", "currency"),
             Self::Square { .. } => Amount::from(&value["amount_money"], "amount", "currency"),
             Self::GoCardless { .. } => Amount::from(value, "amount", "currency"),
             Self::Btcpay { .. } => Amount::from(value, "amount", "currency"),
@@ -148,15 +148,15 @@ impl Provider {
         let parent_id = parent.map(|p| p.id.clone());
         let mut method = Method::POST;
         let (resource, path) = match (self, operation) {
-            (Self::Mollie, "payment.create") => ("payments", "payments".into()),
-            (Self::Mollie, "payment.cancel") => {
+            (Self::Mollie { .. }, "payment.create") => ("payments", "payments".into()),
+            (Self::Mollie { .. }, "payment.cancel") => {
                 method = Method::DELETE;
                 (
                     "payments",
                     format!("payments/{}", parent_id.as_ref().unwrap()),
                 )
             }
-            (Self::Mollie, "refund.create") => (
+            (Self::Mollie { .. }, "refund.create") => (
                 "refunds",
                 format!("payments/{}/refunds", parent_id.as_ref().unwrap()),
             ),
@@ -213,6 +213,16 @@ impl Provider {
             }
             _ => return Err(Error::Unsupported),
         };
+        if terms.contains_key("testmode") {
+            return Err(Error::Invalid);
+        }
+        if let Self::Mollie {
+            test_mode: Some(mode),
+        } = self
+            && method == Method::POST
+        {
+            terms.insert("testmode".into(), json!(mode));
+        }
         let body = if matches!(self, Self::GoCardless { .. }) {
             if same {
                 json!({"data": terms})
@@ -238,17 +248,19 @@ impl Provider {
     }
     pub(super) fn read(&self, reference: &Reference) -> Result<Prepared> {
         let resource = match (self, reference.resource.as_str()) {
-            (Self::Mollie | Self::Square { .. } | Self::GoCardless { .. }, "payments") => {
+            (Self::Mollie { .. } | Self::Square { .. } | Self::GoCardless { .. }, "payments") => {
                 "payments"
             }
-            (Self::Mollie | Self::Square { .. } | Self::GoCardless { .. }, "refunds") => "refunds",
+            (Self::Mollie { .. } | Self::Square { .. } | Self::GoCardless { .. }, "refunds") => {
+                "refunds"
+            }
             (Self::Btcpay { .. }, "invoices") => "invoices",
             (Self::CoinGate { .. }, "orders") => "orders",
             _ => return Err(Error::Invalid),
         };
         let path = match self {
             Self::Btcpay { .. } => format!("api/v1/invoices/{}", reference.id),
-            Self::Mollie if resource == "refunds" => format!(
+            Self::Mollie { .. } if resource == "refunds" => format!(
                 "payments/{}/refunds/{}",
                 reference.parent.as_ref().ok_or(Error::Invalid)?,
                 reference.id
@@ -286,7 +298,7 @@ impl Provider {
         let status = value["status"].as_str().ok_or(Error::Rejected)?;
         let refund = resource == "refunds";
         let state = match self {
-            Self::Mollie => match (refund, status) {
+            Self::Mollie { .. } => match (refund, status) {
                 (false, "paid") => State::Collected,
                 (false, "authorized") => State::Authorized,
                 (true, "refunded") => State::Refunded,
@@ -342,15 +354,7 @@ impl Provider {
             state,
             State::Authorized | State::Collected | State::Settled | State::Refunded
         ) {
-            let actual = if matches!(self, Self::GoCardless { .. }) && refund {
-                Amount::from(
-                    &json!({"amount":value["amount"], "currency":expected.currency}),
-                    "amount",
-                    "currency",
-                )?
-            } else {
-                self.amount(value)?
-            };
+            let actual = self.amount(value)?;
             if !expected.matches(actual) {
                 return Err(Error::Rejected);
             }
@@ -376,7 +380,7 @@ impl Provider {
             }
             // Mollie can mark an order paid after partial manual capture. Preserve
             // uncertainty when captured money does not cover the bound amount.
-            if matches!(self, Self::Mollie) && state == State::Collected {
+            if matches!(self, Self::Mollie { .. }) && state == State::Collected {
                 if let Some(captured) = value.get("amountCaptured") {
                     if !expected.matches(Amount::from(captured, "value", "currency")?) {
                         return Err(Error::Rejected);
@@ -388,9 +392,26 @@ impl Provider {
         }
         Ok(state)
     }
+    pub(super) fn authorization_expiry(&self, value: &Value) -> Result<Option<u64>> {
+        let expiry = match self {
+            Self::Mollie { .. } => value.get("captureBefore"),
+            _ => value.get("delayed_until"),
+        };
+        expiry
+            .map(|value| {
+                let text = value.as_str().ok_or(Error::Rejected)?;
+                let date = time::OffsetDateTime::parse(
+                    text,
+                    &time::format_description::well_known::Rfc3339,
+                )
+                .map_err(|_| Error::Rejected)?;
+                u64::try_from(date.unix_timestamp()).map_err(|_| Error::Rejected)
+            })
+            .transpose()
+    }
     pub(super) fn action<'a>(&self, value: &'a Value) -> Option<&'a Value> {
         match self {
-            Self::Mollie => value.pointer("/_links/checkout/href"),
+            Self::Mollie { .. } => value.pointer("/_links/checkout/href"),
             Self::Btcpay { .. } => value.get("checkoutLink"),
             Self::CoinGate { .. } => value.get("payment_url"),
             _ => None,
