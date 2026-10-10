@@ -35,6 +35,31 @@ sandboxes remain unexecuted.
 | Lightning and other crypto collection services | Invoice creation and authenticated receipt reconciliation can share this contract; chain/wallet support is not a generic payment guarantee. | Reuse appropriate maintained protocol/RPC clients, with node/service credentials injected and fees bounded. No custody or private wallet key integration. See the [crpt candidate catalogue](https://git.corbet.ch/corbet-foss/crpt/src/branch/main/docs/CATALOGUE.md). |
 | Hyperswitch Prism | Potential reuse of provider request/response transformations across many connectors. Each operation needs independent capability qualification; connector presence alone is insufficient. | The evaluated native dependency graph failed the unchanged advisory gate. It is not a dependency. Reassess an upstream-fixed release, including license, diagnostics and dependency footprint; no private fork or advisory exception. Remote orchestration additionally needs an explicit trusted service boundary and retry/logging assessment. [Upstream Rust integration](https://github.com/juspay/hyperswitch-prism/blob/main/sdk/rust/README.md). |
 
+## Bank-account registration identity: future capability
+
+The implemented projection is paid access by requested level and period. No
+built-in adapter currently establishes a common bank-account registration
+identity across vendors, and payment receipt deduplication is not a registration
+limit for an underlying bank account or person. Customer, mandate, payment and
+subscription IDs are provider-scoped operational references; they cannot be
+merged into a common identity by assigning the same label. Shared accounts also
+do not imply one person.
+
+A future account-identity adapter must authenticate the provider's stable
+canonical account identity and state exactly which issuer/account domain and
+ownership guarantee it establishes. It must blind that identity within the
+requested scope inside the domain library, using maintained cryptographic code,
+then use a caller-owned atomic port for the caller's X-registration limit.
+Cross-provider matching needs an authenticated common identity domain; it must
+otherwise remain unsupported. Provider account-verification APIs are research
+candidates, not implemented guarantees; see the [TrueLayer product/API overview](https://docs.truelayer.com/reference/welcome-api-reference).
+
+`Disclosure::Complete` preserves available private upstream fields for an
+explicit caller and future adapter integration. Those fields are unverified
+input to a future identity transformation, never a ready-made comparison key or
+uniqueness proof. No bank identifiers, ownership claims or fabricated common
+identity are added to current paid-access results.
+
 ## Qualification contract
 
 A new adapter declares only operations it actually implements. Prefer maintained

@@ -111,3 +111,14 @@ handover is withheld. Explicit private responses and reported fees remain
 available for host reconciliation. The library cannot persist a newly learned
 fee through an unavailable caller store. The host must preserve that failure and
 charge knowledge before accepting further spending in the affected budget scope.
+
+## Account identity is a separate capability
+
+Current payment adapters establish financial facts and requested paid-access
+level/period. They do not establish a cross-provider bank-account registration
+identity or person uniqueness. Provider customer, mandate and payment IDs cannot
+stand in for a common bank account. A future adapter must authenticate canonical
+identity within its actual provider domain, blind it within the requested scope,
+and apply the caller's registration limit through atomic caller-owned state.
+Complete private replies preserve available fields but cannot themselves mint
+that identity or proof. See the [candidate limitation](CATALOGUE.md#bank-account-registration-identity-future-capability).
