@@ -40,10 +40,13 @@ No financial ledger, raw request history, payment-method details or KYC records
 are stored. `forget` erases the continuation but retains duplicate-execution
 protection. Do not expose serialized `Record` values as application APIs.
 
-A gate consumes `Evidence`, rechecks its service/member/action/provider and
-exclusive expiry, and atomically commits its claim with the gate result. Policy
-chooses which fact is acceptable and how long it remains valid; provider expiry
-caps that choice. Evidence and outcomes are snapshots; provider changes require
+A gate consumes `Evidence` and rechecks its service/member/action/provider and
+exclusive expiry. Community gates (`cgts`) atomically spend the receipt claim
+with their result. Global gates (`cgbl`) accept a fact for a bound check using
+existing retry protection; it is neither a one-use purchase nor person uniqueness.
+The payment journal prevents a receipt moving between authenticated contexts.
+Policy chooses which fact is acceptable and how long it remains valid; provider
+expiry caps that choice. Evidence and outcomes are snapshots; provider changes require
 observation and the host's existing invalidation policy.
 
 ## Stripe adapter
