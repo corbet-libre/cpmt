@@ -5,6 +5,7 @@ use serde_json::{Map, Value};
 use std::time::Duration;
 use stripe::{Client, ClientBuilder, IdempotencyKey, RequestStrategy};
 use stripe_client_core::{RequestBuilder, StripeMethod};
+use tracing::instrument::WithSubscriber;
 
 /// Stripe adapter using upstream authentication, encoding and API-version handling.
 /// No connected-account headers, transfers, balances or wallet custody are exposed.
@@ -234,7 +235,11 @@ impl Adapter for Stripe {
             .request_strategy(RequestStrategy::Idempotent(
                 IdempotencyKey::new(key).map_err(|_| Error::Invalid)?,
             ));
-        let future = request.send(&self.client);
+        // The SDK instruments paths and idempotency keys. Keep those private even
+        // when the host enables tracing; the override is scoped to each poll.
+        let future = request
+            .send(&self.client)
+            .with_subscriber(tracing::subscriber::NoSubscriber::default());
         let uncertain = || Observation {
             // Known-object operations can still be read after a lost response.
             // Refund creation returns a different object; its ID remains unknown.
@@ -268,7 +273,13 @@ impl Adapter for Stripe {
         let reference = reference(continuation)?;
         let path = format!("{}/{}", reference.resource, reference.id);
         let read = RequestBuilder::new(StripeMethod::Get, format!("/{path}")).customize::<Reply>();
-        match tokio::time::timeout(self.timeout, read.send(&self.client)).await {
+        match tokio::time::timeout(
+            self.timeout,
+            read.send(&self.client)
+                .with_subscriber(tracing::subscriber::NoSubscriber::default()),
+        )
+        .await
+        {
             Ok(Ok(reply)) => Self::reduce(reply, &reference.resource, Some(&reference.id)),
             _ => Ok(Observation {
                 continuation: Some(Private::new(continuation.expose().to_vec())),

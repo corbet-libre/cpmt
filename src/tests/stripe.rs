@@ -444,3 +444,65 @@ async fn invalid_sdk_credentials_and_idempotency_keys_fail_before_network() {
         Err(Error::Invalid)
     ));
 }
+
+#[derive(Clone)]
+struct TraceRecorder(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+impl tracing::Subscriber for TraceRecorder {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, _: &tracing::Event<'_>) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+#[tokio::test]
+async fn host_tracing_cannot_capture_sdk_payment_paths_or_keys() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let count = Arc::new(AtomicUsize::new(0));
+    let recorder = TraceRecorder(count.clone());
+    let (url, calls) = server(vec![PAID, PAID]).await;
+    let mut adapter = adapter();
+    adapter.client = ClientBuilder::new("sk_test_fixture")
+        .url(format!("{url}/"))
+        .build()
+        .unwrap();
+    async {
+        tracing::info!("outside payment boundary");
+        assert!(count.swap(0, Ordering::SeqCst) > 0);
+        let result = adapter
+            .execute(
+                &request("stripe.intent.create", serde_json::json!({})),
+                "private-operation-key",
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.state, State::Collected);
+        assert_eq!(
+            adapter
+                .observe("stripe.intent.create", result.continuation.as_ref())
+                .await
+                .unwrap()
+                .state,
+            State::Collected
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+    .with_subscriber(recorder)
+    .await;
+    assert_eq!(calls.await.unwrap().len(), 2);
+}
