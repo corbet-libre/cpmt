@@ -92,6 +92,7 @@ async fn missing_schema_fails_closed() {
     let url = format!("file://{}", dir.path().join("journal.db").display());
     let db = crlt::Db::open(crlt::Config::new(url, "")).await.unwrap();
     let journal = LibsqlJournal::new(&db, "payments").unwrap();
+    assert_eq!(journal.bind(&[7; 32]).await.unwrap_err(), Error::Storage);
     assert!(matches!(journal.get("key").await, Err(Error::Storage)));
     assert!(matches!(
         journal.begin("key", &record(0)).await,
@@ -141,6 +142,71 @@ async fn receipt_ownership_and_result_commit_are_atomic() {
                 "SELECT owner FROM cpmt_receipts WHERE receipt = ?1",
                 [crate::hex(&[7; 32])]
             )
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn actual_database_write_refusals_leave_no_partial_payment_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!("file://{}", dir.path().join("refusals.db").display());
+    let db = crlt::Db::open(crlt::Config::new(url, "")).await.unwrap();
+    let schema = SCHEMA
+        .replace("key_id TEXT NOT NULL", "key_id TEXT NOT NULL CHECK (key_id <> 'blocked')")
+        .replace("operation TEXT NOT NULL", "operation TEXT NOT NULL CHECK (operation <> 'blocked')")
+        .replace("receipt TEXT NOT NULL", "receipt TEXT NOT NULL CHECK (receipt <> '0707070707070707070707070707070707070707070707070707070707070707')");
+    db.migrate(&[crlt::Migration::new(1, "refusals", &schema)])
+        .await
+        .unwrap();
+    let journal = LibsqlJournal::new(&db, "payments").unwrap();
+    // A real database constraint refuses an operation insertion.
+    assert!(matches!(
+        journal.begin("blocked", &record(0)).await,
+        Err(Error::Storage)
+    ));
+    assert!(journal.get("blocked").await.unwrap().is_none());
+    journal.begin("valid", &record(0)).await.unwrap();
+    let mut value = serde_json::to_value(record(1)).unwrap();
+    value["outcome"]["receipt"] = serde_json::json!(vec![7; 32]);
+    let claimed: Record = serde_json::from_value(value).unwrap();
+    assert_eq!(
+        journal.replace("valid", 0, &claimed).await.unwrap_err(),
+        Error::Storage
+    );
+    assert_eq!(journal.get("valid").await.unwrap().unwrap().revision(), 0);
+    db.migrate(&[
+        crlt::Migration::new(1, "refusals", &schema),
+        crlt::Migration::new(2, "receipt-loss", "DROP TABLE cpmt_receipts"),
+    ])
+    .await
+    .unwrap();
+    assert_eq!(
+        journal.replace("valid", 0, &claimed).await.unwrap_err(),
+        Error::Storage
+    );
+    assert_eq!(journal.get("valid").await.unwrap().unwrap().revision(), 0);
+}
+
+#[tokio::test]
+async fn refused_key_binding_cannot_initialize_the_journal() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!("file://{}", dir.path().join("identity.db").display());
+    let db = crlt::Db::open(crlt::Config::new(url, "")).await.unwrap();
+    let schema = SCHEMA.replace(
+        "key_id TEXT NOT NULL",
+        "key_id TEXT NOT NULL CHECK (length(key_id) < 64)",
+    );
+    db.migrate(&[crlt::Migration::new(1, "refusal", &schema)])
+        .await
+        .unwrap();
+    let journal = LibsqlJournal::new(&db, "payments").unwrap();
+    assert_eq!(journal.bind(&[7; 32]).await.unwrap_err(), Error::Storage);
+    assert!(
+        db.community("payments")
+            .unwrap()
+            .query("SELECT key_id FROM cpmt_identity", ())
             .await
             .unwrap()
             .is_empty()

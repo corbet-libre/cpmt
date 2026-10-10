@@ -41,8 +41,8 @@ claim while recording minimal gate metadata. No receipt means no gate evidence.
 An active subscription or a verified authorization does not prove collection.
 
 Production requires a durable journal, a stable injected random binding key,
-authenticated instructions and a trusted clock. The journal rejects a changed binding key. Losing the journal can destroy
-retry/replay guarantees. Keep operation markers for the
-lifetime of their IDs. No live payment tests or credential discovery.
+authenticated instructions and a trusted clock. The journal rejects a changed
+binding key. Losing the journal can destroy retry/replay guarantees. Keep
+operation markers for the lifetime of their IDs. No live payment tests or credential discovery.
 
 See [the contract](docs/CONTRACT.md) for adapter and integration obligations.

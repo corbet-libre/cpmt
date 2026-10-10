@@ -161,7 +161,7 @@ impl Stripe {
             resource: resource.into(),
             id: reply.id.clone(),
         })
-        .map_err(|_| Error::Invalid)?;
+        .expect("provider reference strings serialize to JSON");
         let member_action = if state == State::RequiresAction {
             Some(Private::new(serde_json::to_vec(&serde_json::json!({"client_secret":reply.client_secret, "next_action":reply.next_action})).map_err(|_|Error::Invalid)?))
         } else {

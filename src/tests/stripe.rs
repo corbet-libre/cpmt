@@ -74,6 +74,7 @@ async fn sdk_creates_hold_captures_and_observes_without_repeating_a_charge() {
     let mut adapter = adapter();
     adapter.client = Client::from_url(url.as_str(), "sk_test_fixture");
     assert_eq!(adapter.capabilities().operations.len(), 8);
+    assert_eq!(adapter.max_input_bytes(), 8192);
     let held = adapter
         .execute(
             &request(
@@ -179,10 +180,16 @@ async fn refunds_and_recurring_arrangements_report_distinct_facts() {
 
 #[tokio::test]
 async fn malformed_or_lost_provider_replies_stay_unknown() {
-    let (url, calls) = server(vec!["", "{}", ""]).await;
+    let (url, calls) = server(vec![
+        "",
+        "{}",
+        r#"{"id":"../wrong","object":"payment_intent","status":"succeeded"}"#,
+        "",
+    ])
+    .await;
     let mut adapter = adapter();
     adapter.client = Client::from_url(url.as_str(), "sk_test_fixture");
-    for _ in 0..2 {
+    for _ in 0..3 {
         assert_eq!(
             adapter
                 .execute(
@@ -284,6 +291,7 @@ async fn member_input_cannot_change_terms_or_choose_another_members_object() {
     );
     for params in [
         serde_json::json!({"transfer_data[destination]":"acct_other"}),
+        serde_json::json!({"bad\nkey":"value"}),
         serde_json::json!({"charge":"ch_other"}),
         serde_json::json!({"payment_intent":"pi_other"}),
         serde_json::json!({"transfer_data":{"destination":"acct_other"}}),

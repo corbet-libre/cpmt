@@ -8,7 +8,9 @@ client. There is no automatic provider selection or payment policy.
 
 Adapters are trusted library code, not client plugins. They must:
 
-- Advertise only implemented operations; use current upstream libraries.
+- Advertise only implemented operations and a nonzero combined input limit; use
+  current upstream libraries. The executor applies the limit before hashing or
+  writing an operation marker.
 - Bind member evidence to the caller's amount, currency, recipient and resource.
 - Use the provided stable key for upstream idempotency. Never hide retries.
 - Return `Unknown` for ambiguous side effects; `observe` is read-only.
@@ -23,7 +25,8 @@ Adapters are trusted library code, not client plugins. They must:
 
 The executor persists a keyed instruction digest and `Unknown` before dispatch.
 Concurrent calls or process cancellation cannot dispatch that ID twice. Journal
-writes use compare-and-swap revisions. A failed final write leaves an uncertain
+writes use compare-and-swap revisions. The namespace is atomically bound to the
+injected key fingerprint; reopening with a different key fails before dispatch. A failed final write leaves an uncertain
 result and is never success. This is at-most-once dispatch, not a guarantee that
 a provider collected money. Reconciliation without a provider reference may
 remain `Unknown`; no generic library can infer an unreported external outcome.

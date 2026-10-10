@@ -517,15 +517,15 @@ impl<J: Journal> Payments<J> {
                 request.terms.expose(),
                 request.evidence.expose(),
             ))
-            .map_err(|_| Error::Invalid)?,
+            .expect("fixed payment fields serialize to JSON"),
         );
-        let fingerprint = self.mac(&bytes)?;
+        let fingerprint = self.mac(&bytes);
         let initial = Record {
             fingerprint,
             owner: self.mac(
                 &serde_json::to_vec(&("cpmt.owner.v2", &request.binding))
-                    .map_err(|_| Error::Invalid)?,
-            )?,
+                    .expect("fixed payment fields serialize to JSON"),
+            ),
             outcome: Snapshot {
                 id: request.id,
                 adapter: request.adapter.clone(),
@@ -605,14 +605,12 @@ impl<J: Journal> Payments<J> {
     async fn operation_key(&self, binding: &Binding, id: &[u8; 32]) -> Result<String> {
         validate_binding(binding)?;
         if !self.initialized.load(Ordering::Acquire) {
-            self.journal
-                .bind(&self.mac(b"cpmt.journal-key.v2")?)
-                .await?;
+            self.journal.bind(&self.mac(b"cpmt.journal-key.v2")).await?;
             self.initialized.store(true, Ordering::Release);
         }
         let bytes = serde_json::to_vec(&("cpmt.operation.v2", &binding.scope, id))
-            .map_err(|_| Error::Invalid)?;
-        Ok(crate::hex(&self.mac(&bytes)?))
+            .expect("fixed payment fields serialize to JSON");
+        Ok(crate::hex(&self.mac(&bytes)))
     }
     async fn finish(
         &self,
@@ -629,28 +627,24 @@ impl<J: Journal> Payments<J> {
             bytes.zeroize();
         }
         record.continuation = observation.continuation.map(|p| p.expose().to_vec());
-        record.outcome.receipt = observation
-            .claim
-            .as_ref()
-            .map(|claim| {
-                let bytes = Zeroizing::new(
-                    serde_json::to_vec(&("cpmt.receipt.v2", claim.expose()))
-                        .map_err(|_| Error::Invalid)?,
-                );
-                self.mac(&bytes)
-            })
-            .transpose()?;
+        record.outcome.receipt = observation.claim.as_ref().map(|claim| {
+            let bytes = Zeroizing::new(
+                serde_json::to_vec(&("cpmt.receipt.v2", claim.expose()))
+                    .expect("fixed payment fields serialize to JSON"),
+            );
+            self.mac(&bytes)
+        });
         self.journal.replace(key, revision, &record).await?;
         Ok(Execution {
             outcome: Outcome(record.outcome.clone()),
             member_action: observation.member_action,
         })
     }
-    fn mac(&self, bytes: &[u8]) -> Result<[u8; 32]> {
-        let mut mac =
-            Hmac::<Sha256>::new_from_slice(self.key.as_ref()).map_err(|_| Error::Invalid)?;
+    fn mac(&self, bytes: &[u8]) -> [u8; 32] {
+        let mut mac = Hmac::<Sha256>::new_from_slice(self.key.as_ref())
+            .expect("HMAC accepts the fixed 32-byte key");
         mac.update(bytes);
-        Ok(mac.finalize().into_bytes().into())
+        mac.finalize().into_bytes().into()
     }
 }
 

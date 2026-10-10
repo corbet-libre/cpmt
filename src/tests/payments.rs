@@ -517,7 +517,7 @@ async fn changing_the_binding_key_cannot_rearm_a_payment_id() {
 struct Configured(Capabilities);
 impl Adapter for Configured {
     fn max_input_bytes(&self) -> usize {
-        16384
+        if self.0.id == "unbounded" { 0 } else { 16384 }
     }
     fn capabilities(&self) -> Capabilities {
         self.0.clone()
@@ -533,7 +533,12 @@ impl Adapter for Configured {
 #[tokio::test]
 async fn malformed_adapter_configuration_and_cross_provider_parents_are_rejected() {
     let (mut payments, _) = setup(MemoryJournal::default(), false);
-    for (id, operations) in [("", vec!["collect"]), ("empty", vec![]), ("bad", vec![""])] {
+    for (id, operations) in [
+        ("", vec!["collect"]),
+        ("empty", vec![]),
+        ("bad", vec![""]),
+        ("unbounded", vec!["collect"]),
+    ] {
         assert_eq!(
             payments
                 .register(Arc::new(Configured(Capabilities {

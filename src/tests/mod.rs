@@ -26,6 +26,10 @@ fn roundtrip_and_expiry() {
     let (_, vk) = intermediary();
     let e = signed(&commitment("alpha", b"m1"), 2000, "a-1");
     assert!(verify(&e, &vk, 1000).is_ok());
+    let debug = format!("{e:?}");
+    assert!(!debug.contains(&e.commitment));
+    assert!(!debug.contains(&e.assertion_id));
+    assert!(!debug.contains("signature"));
     assert_eq!(verify(&e, &vk, 2000), Err(Error::Rejected));
 }
 
