@@ -47,3 +47,5 @@ binding key. Losing the journal can destroy retry/replay guarantees. Keep
 operation markers for the lifetime of their IDs. No live payment tests or credential discovery.
 
 See [the contract](docs/CONTRACT.md) for adapter and integration obligations.
+See [service credentials](docs/CREDENTIALS.md) for injection, token refresh,
+account boundaries and the stable journal key.
