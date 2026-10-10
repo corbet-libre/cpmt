@@ -12,6 +12,7 @@ struct Provider {
     calls: Arc<AtomicUsize>,
     mode: cost::Mode,
     fails: bool,
+    advance: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
 impl Adapter for Provider {
     fn max_input_bytes(&self) -> usize {
@@ -34,6 +35,9 @@ impl Adapter for Provider {
     ) -> Result<Observation> {
         dispatch.check(&self.id, self.mode)?;
         self.calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(clock) = &self.advance {
+            clock.store(100, Ordering::SeqCst);
+        }
         if self.fails {
             return Err(Error::Rejected);
         }
@@ -102,7 +106,8 @@ fn setup(
     mode: cost::Mode,
     fails: bool,
 ) -> (Payments<MemoryJournal>, Arc<AtomicUsize>) {
-    let mut payments = Payments::new(MemoryJournal::default(), [5; 32]).unwrap();
+    let mut payments =
+        Payments::new(MemoryJournal::default(), [5; 32], std::sync::Arc::new(|| 0)).unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     for (id, state) in ["first", "second"].into_iter().zip(states) {
         payments
@@ -113,6 +118,7 @@ fn setup(
                 calls: calls.clone(),
                 mode,
                 fails,
+                advance: None,
             }))
             .unwrap();
     }
@@ -251,7 +257,8 @@ async fn every_alternative_is_checked_before_any_charge() {
             .stop,
         Stop::Domain(Error::Rejected)
     );
-    let empty = Payments::new(MemoryJournal::default(), [2; 32]).unwrap();
+    let empty =
+        Payments::new(MemoryJournal::default(), [2; 32], std::sync::Arc::new(|| 0)).unwrap();
     assert_eq!(
         empty
             .run(
@@ -267,7 +274,9 @@ async fn every_alternative_is_checked_before_any_charge() {
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     // A production permit still requires its exact instruction at the transport edge.
     let permit = test_support::permit(&tasks[0].instruction, cost::Mode::Production);
-    assert!(cost::Dispatch::new(&tasks[1].instruction, permit, 1).is_err());
+    assert!(
+        cost::Dispatch::new(&tasks[1].instruction, permit, 1, std::sync::Arc::new(|| 0)).is_err()
+    );
 }
 #[test]
 fn simulation_uses_real_budget_fallback_and_binding_without_production_proofs() {
@@ -358,4 +367,63 @@ async fn replayed_actual_fee_cannot_fit_a_smaller_replanned_quote() {
             .stop,
         Stop::Plan(cost::Error::Charge)
     );
+}
+
+#[tokio::test]
+async fn cascade_refreshes_time_after_each_attempt_and_preserves_real_charge_violations() {
+    let now = Arc::new(std::sync::atomic::AtomicU64::new(1));
+    let clock = now.clone();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut payments = Payments::new(
+        MemoryJournal::default(),
+        [7; 32],
+        Arc::new(move || clock.load(Ordering::SeqCst)),
+    )
+    .unwrap();
+    for id in ["first", "second"] {
+        payments
+            .register(Arc::new(Provider {
+                id: id.into(),
+                state: State::Failed,
+                fee: Some(fee(2)),
+                calls: calls.clone(),
+                mode: cost::Mode::Production,
+                fails: false,
+                advance: Some(now.clone()),
+            }))
+            .unwrap();
+    }
+    let tasks = tasks();
+    let result = payments
+        .run(
+            plan(&tasks, cost::Mode::Production, 10, 100),
+            &tasks,
+            1,
+            Disclosure::Minimal,
+        )
+        .await;
+    assert_eq!(result.stop, Stop::Plan(cost::Error::Expired));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(result.exposure, fee(2));
+    let (payments, calls) = setup(
+        [State::Collected; 2],
+        Some(7),
+        cost::Mode::Production,
+        false,
+    );
+    let result = payments
+        .run(
+            plan(&tasks, cost::Mode::Production, 10, 100),
+            &tasks,
+            1,
+            Disclosure::Complete,
+        )
+        .await;
+    assert_eq!(result.stop, Stop::Plan(cost::Error::Charge));
+    let violation = result.charge_violation.unwrap();
+    assert_eq!(violation.reported, fee(7));
+    assert_eq!(violation.reserved, fee(5));
+    assert_eq!(violation.prior, fee(0));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(!result.attempts[0].outcome.satisfies_terms());
 }

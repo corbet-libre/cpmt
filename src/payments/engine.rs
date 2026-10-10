@@ -14,22 +14,27 @@ use zeroize::Zeroize;
 /// Registry and executor. No provider ordering, pricing, account balance or custody.
 pub struct Payments<J> {
     journal: J,
+    clock: Arc<dyn cost::Clock>,
     key: Zeroizing<[u8; 32]>,
     initialized: AtomicBool,
     pub(super) adapters: BTreeMap<String, Arc<dyn ErasedAdapter>>,
 }
 impl<J: Journal> Payments<J> {
     /// Use an injected, stable, random journal-binding key; never discover secrets.
-    pub fn new(journal: J, key: [u8; 32]) -> Result<Self> {
+    pub fn new(journal: J, key: [u8; 32], clock: Arc<dyn cost::Clock>) -> Result<Self> {
         if key == [0; 32] {
             return Err(Error::Invalid);
         }
         Ok(Self {
             journal,
+            clock,
             key: Zeroizing::new(key),
             initialized: AtomicBool::new(false),
             adapters: BTreeMap::new(),
         })
+    }
+    pub(crate) fn current_time(&self, admission: u64) -> u64 {
+        admission.max(self.clock.now())
     }
     /// Register one trusted adapter. Existing identities cannot be replaced.
     pub fn register<A: Adapter + 'static>(&mut self, adapter: Arc<A>) -> Result<()> {
@@ -132,7 +137,7 @@ impl<J: Journal> Payments<J> {
             &adapter.capabilities().id,
             adapter.mode(),
             &permit,
-            now,
+            self.current_time(now),
         )?;
         let key = self.operation_key(&request.binding, &request.id).await?;
         let fingerprint = self.instruction_digest(request, adapter.mode());
@@ -146,6 +151,7 @@ impl<J: Journal> Payments<J> {
             outcome: Snapshot {
                 request_digest: fingerprint,
                 satisfies_terms: false,
+                cost_violation: false,
                 sandbox: adapter.mode() == Mode::Sandbox,
                 id: request.id,
                 adapter: request.adapter.clone(),
@@ -158,11 +164,21 @@ impl<J: Journal> Payments<J> {
             continuation: None,
             revision: 0,
         };
-        if let Some(previous) = self.journal.begin(&key, &initial).await? {
+        if let Some(previous) = self
+            .journal
+            .begin(
+                &key,
+                &initial,
+                request.expires_at.min(permit.quote().valid_until),
+                self.clock.as_ref(),
+            )
+            .await?
+        {
             if previous.fingerprint != fingerprint {
                 return Err(Error::Conflict);
             }
             return Ok(Execution {
+                commit_error: None,
                 cost: previous.cost.clone(),
                 outcome: Outcome(previous.outcome.clone()),
                 member_action: None,
@@ -187,7 +203,7 @@ impl<J: Journal> Payments<J> {
             None
         };
         // Cancellation, a crash, or an adapter error leaves the uncertain marker.
-        let authorized = Dispatch::new(request, permit, now)?;
+        let authorized = Dispatch::new(request, permit, now, self.clock.clone())?;
         let observation = match request.kind {
             Action::Execute => adapter.execute(&authorized, &key, parent.as_ref()).await?,
             Action::Observe => adapter.observe(&authorized, parent.as_ref()).await?,
@@ -274,7 +290,11 @@ impl<J: Journal> Payments<J> {
         record.outcome.state = observation.state;
         record.outcome.valid_until = observation.valid_until;
         record.outcome.satisfies_terms = observation.satisfies_terms;
-        record.cost.report(observation.actual_cost.as_ref())?;
+        record.outcome.cost_violation = record
+            .cost
+            .report(observation.actual_cost.as_ref())
+            .is_err();
+        record.outcome.satisfies_terms &= !record.outcome.cost_violation;
         // This fresh immutable operation has no prior continuation to overwrite.
         record.continuation = observation.continuation.map(|p| p.expose().to_vec());
         record.outcome.receipt = observation.claim.as_ref().map(|claim| {
@@ -284,11 +304,21 @@ impl<J: Journal> Payments<J> {
             );
             self.mac(&bytes)
         });
-        self.journal.replace(key, revision, &record).await?;
+        let commit_error = self.journal.replace(key, revision, &record).await.err();
+        if commit_error.is_some() {
+            record.outcome.state = State::Unknown;
+            record.outcome.satisfies_terms = false;
+            record.outcome.receipt = None;
+        }
         Ok(Execution {
+            commit_error,
             cost: record.cost.clone(),
             outcome: Outcome(record.outcome.clone()),
-            member_action: observation.member_action,
+            member_action: if commit_error.is_none() {
+                observation.member_action
+            } else {
+                None
+            },
             upstream: match disclosure {
                 Disclosure::Minimal => Vec::new(),
                 Disclosure::Complete => observation.upstream,

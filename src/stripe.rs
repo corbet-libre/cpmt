@@ -384,6 +384,7 @@ impl Adapter for Stripe {
             }
         }
         let path = format!("/{path}");
+        let authorization = request;
         let financial =
             Financial::from_terms(&params, parent.as_ref().and_then(|p| p.financial.as_ref()));
         let cancel = request.operation == "stripe.subscription.cancel";
@@ -424,6 +425,7 @@ impl Adapter for Stripe {
                 }),
             ..Observation::fact(State::Unknown)
         };
+        authorization.check(&self.id, self.mode)?;
         match tokio::time::timeout(self.timeout, future).await {
             Ok(Ok(reply)) => {
                 let mut observation = Self::project(reply, resource, expected, financial.as_ref());
@@ -454,6 +456,7 @@ impl Adapter for Stripe {
         let read = RequestBuilder::new(StripeMethod::Get, format!("/{path}"))
             .customize::<miniserde::json::Object>()
             .request_strategy(RequestStrategy::Once);
+        request.check(&self.id, self.mode)?;
         match tokio::time::timeout(
             self.timeout,
             read.send(&self.client)

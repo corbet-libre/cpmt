@@ -67,3 +67,11 @@ reach this adapter, and does not expose response headers. REST adapters preserve
 bounded response bytes, status and available headers through private output.
 Stripe's maintained SDK buffers its response internally; its limit here is a
 request timeout and explicit input bound, not a configurable response byte cap.
+
+The host injects a live `cost::Clock` into `Payments::new` (closures implement the
+trait). Dispatch time is refreshed after waits and before each transport phase.
+Caller `Journal::begin` receives the effective deadline for its atomic decision.
+An unexpected fee remains visible in `cost.violation` and cascade
+`charge_violation`; it does not disappear into a smaller original reservation.
+Failed final state writes return `commit_error`, Unknown and explicit private
+reconciliation data, with no proof or automatic retry.

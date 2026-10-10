@@ -24,6 +24,8 @@ pub struct Simulation {
     pub states: Vec<State>,
     /// Simulated costs/reservations; no money was spent.
     pub exposure: cost::Amount,
+    /// Dummy over-bound or foreign-unit charge, preserved like real reports.
+    pub charge_violation: Option<cost::ChargeViolation>,
     /// Explicit stop reason from the same planner/classification as real tasks.
     pub stop: Stop,
 }
@@ -40,6 +42,7 @@ pub fn simulate(plan: cost::Plan<String, String>, fixtures: &[Fixture], now: u64
                 atoms: 0,
             },
             stop: Stop::Plan(cost::Error::Binding),
+            charge_violation: None,
         };
     }
     let selected =
@@ -53,6 +56,7 @@ pub fn simulate(plan: cost::Plan<String, String>, fixtures: &[Fixture], now: u64
                         atoms: 0,
                     },
                     stop: Stop::Domain(error),
+                    charge_violation: None,
                 };
             }
         };
@@ -80,6 +84,7 @@ pub fn simulate(plan: cost::Plan<String, String>, fixtures: &[Fixture], now: u64
     Simulation {
         states,
         exposure: cascade.exposure(),
+        charge_violation: cascade.charge_violation().cloned(),
         stop,
     }
 }

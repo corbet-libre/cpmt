@@ -418,6 +418,7 @@ impl Adapter for Rest {
         self.provider.operation(&request.operation)?;
         let reference = decode(continuation.ok_or(Error::Unsupported)?)?;
         let prepared = self.provider.read(&reference)?;
+        request.check(&self.id, self.mode)?;
         let reply = self
             .send(Method::GET, &prepared.path, None, None)
             .with_subscriber(tracing::subscriber::NoSubscriber::default())

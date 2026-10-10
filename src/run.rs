@@ -26,6 +26,9 @@ pub struct Report {
     pub attempts: Vec<Execution>,
     /// Known charges plus conservatively reserved exposure.
     pub exposure: cost::Amount,
+    /// Original unbudgeted/foreign-unit fee; `exposure` alone is not total cost
+    /// when this is present. Host accounting must preserve prior plus reported.
+    pub charge_violation: Option<cost::ChargeViolation>,
     /// Explicit stop reason; uncertainty never silently starts another payment.
     pub stop: Stop,
 }
@@ -106,6 +109,7 @@ impl<J: Journal> Payments<J> {
                         atoms: 0,
                     },
                     stop: Stop::Domain(error),
+                    charge_violation: None,
                 };
             }
         };
@@ -113,7 +117,7 @@ impl<J: Journal> Payments<J> {
         let mut attempts = Vec::new();
         let mut stop = Stop::Outcome(cost::Outcome::SafeFailure);
         for index in selected {
-            let permit = match cascade.begin(now) {
+            let permit = match cascade.begin(self.current_time(now)) {
                 Ok(permit) => permit,
                 Err(error) => {
                     stop = Stop::Plan(error);
@@ -132,13 +136,20 @@ impl<J: Journal> Payments<J> {
                 }
             };
             let outcome = classify(result.outcome.state(), task.requires);
-            let actual = result.cost.actual.map(|atoms| cost::Amount {
-                unit: cost::Unit {
-                    code: result.cost.unit.clone(),
-                    scale: result.cost.scale,
-                },
-                atoms,
-            });
+            let actual = result
+                .cost
+                .violation
+                .as_ref()
+                .map(cost::ReportedFee::amount)
+                .or_else(|| {
+                    result.cost.actual.map(|atoms| cost::Amount {
+                        unit: cost::Unit {
+                            code: result.cost.unit.clone(),
+                            scale: result.cost.scale,
+                        },
+                        atoms,
+                    })
+                });
             attempts.push(result);
             if let Err(error) = cascade.complete(outcome, actual) {
                 stop = Stop::Plan(error);
@@ -152,6 +163,7 @@ impl<J: Journal> Payments<J> {
         Report {
             attempts,
             exposure: cascade.exposure(),
+            charge_violation: cascade.charge_violation().cloned(),
             stop,
         }
     }

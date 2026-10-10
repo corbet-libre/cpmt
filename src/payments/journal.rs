@@ -61,10 +61,15 @@ pub trait Journal: Send + Sync {
     /// configured budget. Refuse insufficient exposure before inserting anything.
     /// Return an existing operation without reserving twice. Production hosts
     /// must preserve this transaction across crashes and concurrent callers.
+    /// Check the effective quote/request deadline with the fresh trusted clock
+    /// inside the reservation decision. Existing charge violations block new
+    /// reservations in the affected host budget scope until reconciled.
     fn begin(
         &self,
         key: &str,
         record: &Record,
+        deadline: u64,
+        clock: &dyn cost::Clock,
     ) -> impl Future<Output = Result<Option<Record>>> + Send;
     /// Atomically replace the expected revision and reserve any receipt for its
     /// context. Another context cannot claim it. Conflicts leave data unchanged.
@@ -116,10 +121,22 @@ impl Journal for MemoryJournal {
             .get(key)
             .cloned())
     }
-    async fn begin(&self, key: &str, record: &Record) -> Result<Option<Record>> {
+    async fn begin(
+        &self,
+        key: &str,
+        record: &Record,
+        deadline: u64,
+        clock: &dyn cost::Clock,
+    ) -> Result<Option<Record>> {
         let mut state = self.0.lock().map_err(|_| Error::Storage)?;
         if let Some(record) = state.records.get(key) {
             return Ok(Some(record.clone()));
+        }
+        if clock.now() >= deadline {
+            return Err(Error::Expired);
+        }
+        if state.records.values().any(|r| r.cost.violation.is_some()) {
+            return Err(Error::Cost);
         }
         if let Some(budget) = &state.budget {
             if record.cost.unit != budget.unit.code || record.cost.scale != budget.unit.scale {

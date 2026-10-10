@@ -88,3 +88,26 @@ Use maintained SDK/protocol/HTTP/cryptographic libraries, current compatible
 ranges and first-party main branches; no exact manifest pins or private forks.
 Owned code forbids unsafe Rust. Lockfiles record the CI-tested graph. Fixture
 validation is distinct from unexecuted live provider qualification.
+
+## Fresh deadlines and unexpected charges
+
+`Payments::new` takes an explicit trusted `cost::Clock`. Its time convention must
+match request and quote deadlines and advance while operations await provider or
+caller state. The `now` dispatch argument is only a conservative admission-time
+lower bound. Fresh checks run after reservation awaits and immediately before
+transport; multi-phase adapters repeat them before each new billable call.
+`Journal::begin` receives the minimum request/quote deadline and the trusted clock
+for its atomic reservation decision. An expired reservation cannot dispatch.
+
+Authenticated fees exceeding the quote or changing denomination are preserved in
+`Reservation::violation`, including the original unit. They block proof and new
+reservations in the affected host budget until reconciled. `run`/simulation expose
+`charge_violation` with prior exposure, reserved maximum and reported charge;
+`exposure` alone is only the authorized reservation ledger in that case.
+
+If the final caller-state write fails, `Execution::commit_error` is set. The
+returned outcome is Unknown and cannot prove success or trigger fallback; member
+handover is withheld. Explicit private responses and reported fees remain
+available for host reconciliation. The library cannot persist a newly learned
+fee through an unavailable caller store. The host must preserve that failure and
+charge knowledge before accepting further spending in the affected budget scope.

@@ -262,6 +262,7 @@ pub struct Outcome(Snapshot);
 struct Snapshot {
     request_digest: [u8; 32],
     satisfies_terms: bool,
+    cost_violation: bool,
     sandbox: bool,
     id: [u8; 32],
     adapter: String,
@@ -319,7 +320,8 @@ impl Outcome {
         now: u64,
         until: u64,
     ) -> Result<Evidence> {
-        if self.0.sandbox
+        if self.0.cost_violation
+            || self.0.sandbox
             || &self.0.binding != binding
             || self.0.state != state
             || matches!(
@@ -368,6 +370,10 @@ impl Evidence {
 
 /// Execution result with a separate, nonserializable member-only handover.
 pub struct Execution {
+    /// Caller state failed to commit the provider result. The returned outcome
+    /// is Unknown and cannot prove success; reconcile using private diagnostics
+    /// and preserved fee reports, never repeat the payment under a fresh ID.
+    pub commit_error: Option<Error>,
     /// Reserved fee exposure and any actual charge established by the adapter.
     pub cost: Reservation,
     /// Minimal current payment fact for the caller.

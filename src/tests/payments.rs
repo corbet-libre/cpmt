@@ -87,7 +87,7 @@ pub(crate) fn setup(
     journal: MemoryJournal,
     error: bool,
 ) -> (Payments<MemoryJournal>, Arc<Provider>) {
-    let mut payments = Payments::new(journal, [7; 32]).unwrap();
+    let mut payments = Payments::new(journal, [7; 32], std::sync::Arc::new(|| 0)).unwrap();
     let provider = Arc::new(Provider {
         fee: None,
         calls: AtomicUsize::new(0),
@@ -368,7 +368,7 @@ async fn invalid_and_expired_requests_never_contact_a_provider() {
 #[tokio::test]
 async fn registration_storage_conflicts_and_diagnostics_are_safe() {
     assert!(matches!(
-        Payments::new(MemoryJournal::default(), [0; 32]),
+        Payments::new(MemoryJournal::default(), [0; 32], std::sync::Arc::new(|| 0)),
         Err(Error::Invalid)
     ));
     let journal = MemoryJournal::default();
@@ -427,10 +427,10 @@ async fn one_receipt_cannot_fund_another_member_or_action() {
     );
     repeated.id = [3; 32];
     repeated.binding.subject = "other-member".into();
-    assert!(matches!(
-        payments.execute(&repeated, 1).await,
-        Err(Error::Conflict)
-    ));
+    let conflicted = payments.execute(&repeated, 1).await.unwrap();
+    assert_eq!(conflicted.commit_error, Some(Error::Conflict));
+    assert_eq!(conflicted.outcome.state(), State::Unknown);
+    assert!(conflicted.member_action.is_none());
     assert_eq!(
         payments
             .outcome(&repeated.id, &repeated.binding)
@@ -442,10 +442,10 @@ async fn one_receipt_cannot_fund_another_member_or_action() {
     repeated.id = [4; 32];
     repeated.binding = request().binding;
     repeated.binding.action = "other-action".into();
-    assert!(matches!(
-        payments.execute(&repeated, 1).await,
-        Err(Error::Conflict)
-    ));
+    let conflicted = payments.execute(&repeated, 1).await.unwrap();
+    assert_eq!(conflicted.commit_error, Some(Error::Conflict));
+    assert_eq!(conflicted.outcome.state(), State::Unknown);
+    assert!(conflicted.member_action.is_none());
     assert_eq!(journal.0.lock().unwrap().receipts.len(), 1);
 }
 
@@ -486,7 +486,8 @@ async fn cancelling_an_inflight_request_preserves_its_uncertain_execution_marker
         started: tokio::sync::Notify::new(),
         release: tokio::sync::Notify::new(),
     });
-    let mut payments = Payments::new(MemoryJournal::default(), [7; 32]).unwrap();
+    let mut payments =
+        Payments::new(MemoryJournal::default(), [7; 32], std::sync::Arc::new(|| 0)).unwrap();
     payments.register(provider.clone()).unwrap();
     let payments = Arc::new(payments);
     let worker = payments.clone();
@@ -530,7 +531,7 @@ async fn changing_the_binding_key_cannot_rearm_a_payment_id() {
     let journal = MemoryJournal::default();
     let (payments, _) = setup(journal.clone(), false);
     payments.execute(&request(), 1).await.unwrap();
-    let mut reopened = Payments::new(journal, [8; 32]).unwrap();
+    let mut reopened = Payments::new(journal, [8; 32], std::sync::Arc::new(|| 0)).unwrap();
     let provider = Arc::new(Provider {
         fee: None,
         calls: AtomicUsize::new(0),
@@ -657,7 +658,7 @@ async fn poisoned_journals_and_exhausted_revisions_never_grant_success() {
     assert_eq!(journal.bind(&[7; 32]).await.unwrap_err(), Error::Storage);
     assert!(matches!(journal.get("key").await, Err(Error::Storage)));
     assert!(matches!(
-        journal.begin("key", &record).await,
+        journal.begin("key", &record, 100, &|| 0).await,
         Err(Error::Storage)
     ));
     assert_eq!(
@@ -687,7 +688,7 @@ async fn polling_or_forgetting_an_inflight_payment_cannot_discard_its_provider_r
         release: tokio::sync::Notify::new(),
     });
     let journal = MemoryJournal::default();
-    let mut payments = Payments::new(journal.clone(), [7; 32]).unwrap();
+    let mut payments = Payments::new(journal.clone(), [7; 32], std::sync::Arc::new(|| 0)).unwrap();
     payments.register(provider.clone()).unwrap();
     let payments = Arc::new(payments);
     let worker = payments.clone();
@@ -1051,4 +1052,189 @@ async fn snapshots_reads_and_caller_budget_keep_environment_and_unknown_exposure
     zero.id = [0; 32];
     let permit = priced(&zero, Mode::Production, 0);
     assert!(cost::validate(&zero, "test", Mode::Production, &permit, 1).is_err());
+}
+
+struct DelayedJournal {
+    inner: MemoryJournal,
+    now: Arc<std::sync::atomic::AtomicU64>,
+    before_reservation: bool,
+    fail_commit: bool,
+}
+impl Journal for DelayedJournal {
+    async fn bind(&self, key: &[u8; 32]) -> Result<()> {
+        self.inner.bind(key).await
+    }
+    async fn get(&self, key: &str) -> Result<Option<Record>> {
+        self.inner.get(key).await
+    }
+    async fn begin(
+        &self,
+        key: &str,
+        record: &Record,
+        deadline: u64,
+        clock: &dyn cost::Clock,
+    ) -> Result<Option<Record>> {
+        assert_eq!(deadline, 99);
+        if self.before_reservation {
+            self.now.store(99, Ordering::SeqCst);
+        }
+        let record = self.inner.begin(key, record, deadline, clock).await?;
+        if !self.fail_commit {
+            self.now.store(99, Ordering::SeqCst);
+        }
+        Ok(record)
+    }
+    async fn replace(&self, key: &str, revision: u64, record: &Record) -> Result<()> {
+        if self.fail_commit {
+            Err(Error::Storage)
+        } else {
+            self.inner.replace(key, revision, record).await
+        }
+    }
+}
+#[tokio::test]
+async fn reservation_delays_cannot_dispatch_expired_quotes() {
+    for before in [true, false] {
+        let now = Arc::new(std::sync::atomic::AtomicU64::new(1));
+        let clock = now.clone();
+        let journal = DelayedJournal {
+            inner: MemoryJournal::default(),
+            now: now.clone(),
+            before_reservation: before,
+            fail_commit: false,
+        };
+        let inner = journal.inner.clone();
+        let provider = Arc::new(Provider {
+            fee: None,
+            calls: AtomicUsize::new(0),
+            error: false,
+        });
+        let mut payments = Payments::new(
+            journal,
+            [7; 32],
+            Arc::new(move || clock.load(Ordering::SeqCst)),
+        )
+        .unwrap();
+        payments.register(provider.clone()).unwrap();
+        let request = request();
+        let result = payments
+            .dispatch(&request, priced(&request, Mode::Production, 7), 1)
+            .await;
+        assert_eq!(
+            result.err(),
+            Some(if before { Error::Expired } else { Error::Cost })
+        );
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(inner.0.lock().unwrap().records.len(), usize::from(!before));
+    }
+}
+#[tokio::test]
+async fn unexpected_charges_are_preserved_without_proof_or_further_budget_reservation() {
+    for (unit, scale, atoms) in [("fee", 2, 8), ("other", 2, 3), ("fee", 3, 3)] {
+        let journal = MemoryJournal::default();
+        let mut payments = Payments::new(journal.clone(), [7; 32], Arc::new(|| 1)).unwrap();
+        let fee = cost::Amount {
+            unit: cost::Unit {
+                code: unit.into(),
+                scale,
+            },
+            atoms,
+        };
+        let provider = Arc::new(Provider {
+            fee: Some(fee.clone()),
+            calls: AtomicUsize::new(0),
+            error: false,
+        });
+        payments.register(provider.clone()).unwrap();
+        let request = request();
+        let result = payments
+            .dispatch_with_output(
+                &request,
+                priced(&request, Mode::Production, 7),
+                1,
+                Disclosure::Complete,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.cost.violation.as_ref().unwrap().amount(), fee);
+        assert!(result.commit_error.is_none());
+        assert_eq!(result.upstream.len(), 1);
+        assert!(!result.outcome.satisfies_terms());
+        assert!(
+            result
+                .outcome
+                .evidence(&request.binding, State::Collected, 1, 50)
+                .is_err()
+        );
+        let replay = payments
+            .dispatch(&request, priced(&request, Mode::Production, 7), 1)
+            .await
+            .unwrap();
+        assert_eq!(replay.cost.violation.unwrap().amount(), fee);
+        let mut other = self::request();
+        other.id = [9; 32];
+        assert_eq!(
+            payments
+                .dispatch(&other, priced(&other, Mode::Production, 1), 1)
+                .await
+                .err(),
+            Some(Error::Cost)
+        );
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    }
+}
+#[tokio::test]
+async fn failed_caller_commit_returns_unknown_with_private_results_and_unbudgeted_charge() {
+    let now = Arc::new(std::sync::atomic::AtomicU64::new(1));
+    let clock = now.clone();
+    let journal = DelayedJournal {
+        inner: MemoryJournal::default(),
+        now,
+        before_reservation: false,
+        fail_commit: true,
+    };
+    let mut payments = Payments::new(
+        journal,
+        [7; 32],
+        Arc::new(move || clock.load(Ordering::SeqCst)),
+    )
+    .unwrap();
+    let fee = cost::Amount {
+        unit: cost::Unit {
+            code: "other-fee".into(),
+            scale: 0,
+        },
+        atoms: 8,
+    };
+    payments
+        .register(Arc::new(Provider {
+            fee: Some(fee.clone()),
+            calls: AtomicUsize::new(0),
+            error: false,
+        }))
+        .unwrap();
+    let request = request();
+    let result = payments
+        .dispatch_with_output(
+            &request,
+            priced(&request, Mode::Production, 7),
+            1,
+            Disclosure::Complete,
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.commit_error, Some(Error::Storage));
+    assert_eq!(result.outcome.state(), State::Unknown);
+    assert!(result.member_action.is_none());
+    assert_eq!(result.upstream.len(), 1);
+    assert_eq!(result.cost.violation.unwrap().amount(), fee);
+    assert!(!result.outcome.satisfies_terms());
+    assert_eq!(
+        payments
+            .outcome(&request.id, &request.binding)
+            .await
+            .unwrap()
+            .state(),
+        State::Unknown
+    );
 }

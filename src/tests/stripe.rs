@@ -596,7 +596,12 @@ impl Stripe {
         key: &str,
         previous: Option<&Private>,
     ) -> Result<Observation> {
-        let auth = Dispatch::new(request, crate::test_support::permit(request, self.mode), 0)?;
+        let auth = Dispatch::new(
+            request,
+            crate::test_support::permit(request, self.mode),
+            0,
+            std::sync::Arc::new(|| 0),
+        )?;
         Adapter::execute(self, &auth, key, previous).await
     }
     async fn observe(&self, operation: &str, previous: Option<&Private>) -> Result<Observation> {
@@ -606,6 +611,7 @@ impl Stripe {
             &request,
             crate::test_support::permit(&request, self.mode),
             0,
+            std::sync::Arc::new(|| 0),
         )?;
         Adapter::observe(self, &auth, previous).await
     }
@@ -736,6 +742,7 @@ async fn actual_mode_action_and_timeout_edges_cannot_mint_success() {
         &instruction,
         crate::test_support::permit(&instruction, Mode::Sandbox),
         0,
+        std::sync::Arc::new(|| 0),
     )
     .unwrap();
     assert!(
@@ -748,6 +755,7 @@ async fn actual_mode_action_and_timeout_edges_cannot_mint_success() {
         &instruction,
         crate::test_support::permit(&instruction, Mode::Sandbox),
         0,
+        std::sync::Arc::new(|| 0),
     )
     .unwrap();
     assert!(Adapter::observe(&adapter, &dispatch, None).await.is_err());

@@ -4,6 +4,43 @@ pub use cfbk::cost::*;
 pub use cfbk::{Candidate, Config};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
+
+/// Trusted host clock in the same time convention as request/quote deadlines.
+/// Implementations must advance during awaits; a captured admission timestamp
+/// does not satisfy production freshness. Tests can inject deterministic clocks.
+pub trait Clock: Send + Sync {
+    /// Read current trusted time immediately before a side effect.
+    fn now(&self) -> u64;
+}
+impl<F: Fn() -> u64 + Send + Sync> Clock for F {
+    fn now(&self) -> u64 {
+        self()
+    }
+}
+
+/// Authenticated unexpected service charge retained for host reconciliation.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReportedFee {
+    /// Original unit, without conversion into the reserved denomination.
+    pub unit: String,
+    /// Original unit scale.
+    pub scale: u8,
+    /// Provider-reported integer quantity, including an excess charge.
+    pub atoms: u64,
+}
+impl ReportedFee {
+    /// Return the shared planner amount without losing denomination.
+    pub fn amount(&self) -> Amount {
+        Amount {
+            unit: Unit {
+                code: self.unit.clone(),
+                scale: self.scale,
+            },
+            atoms: self.atoms,
+        }
+    }
+}
 
 /// Minimal caller-owned exposure record, separate from payment principal.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -16,6 +53,9 @@ pub struct Reservation {
     pub maximum: u64,
     /// Actual authenticated fee, if reported in this same denomination.
     pub actual: Option<u64>,
+    /// Preserved charge exceeding the quote or changing unit. Its presence
+    /// blocks proof/fallback and requires host accounting beyond `maximum`.
+    pub violation: Option<ReportedFee>,
     /// Provider quote or explicitly configured tariff revision.
     pub source: String,
 }
@@ -28,6 +68,7 @@ impl Reservation {
             scale: maximum.unit.scale,
             maximum: maximum.atoms,
             actual: None,
+            violation: None,
             source: permit.quote().source.clone(),
         })
     }
@@ -37,6 +78,11 @@ impl Reservation {
                 || actual.unit.scale != self.scale
                 || actual.atoms > self.maximum
             {
+                self.violation = Some(ReportedFee {
+                    unit: actual.unit.code.clone(),
+                    scale: actual.unit.scale,
+                    atoms: actual.atoms,
+                });
                 return Err(PaymentError::Cost);
             }
             self.actual = Some(actual.atoms);
@@ -102,21 +148,40 @@ pub struct Dispatch<'a> {
     request: &'a Instruction,
     permit: DispatchPermit<String>,
     now: u64,
+    clock: Arc<dyn Clock>,
 }
 impl<'a> Dispatch<'a> {
     /// Bind an already reserved host operation to its explicitly authorized cost.
-    pub fn new(request: &'a Instruction, permit: DispatchPermit<String>, now: u64) -> Result<Self> {
-        validate(request, &request.adapter, permit.mode(), &permit, now)?;
+    pub fn new(
+        request: &'a Instruction,
+        permit: DispatchPermit<String>,
+        now: u64,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Self> {
+        validate(
+            request,
+            &request.adapter,
+            permit.mode(),
+            &permit,
+            now.max(clock.now()),
+        )?;
         Ok(Self {
             request,
             permit,
             now,
+            clock,
         })
     }
     /// Adapters must call this with their actual account instance and mode
     /// before every potentially billable operation, including observations.
     pub fn check(&self, adapter: &str, mode: Mode) -> Result<()> {
-        validate(self.request, adapter, mode, &self.permit, self.now)
+        validate(
+            self.request,
+            adapter,
+            mode,
+            &self.permit,
+            self.now.max(self.clock.now()),
+        )
     }
 }
 impl std::ops::Deref for Dispatch<'_> {
