@@ -14,6 +14,7 @@ use std::time::Duration;
 use tracing::instrument::WithSubscriber;
 use zeroize::Zeroizing;
 mod profile;
+mod projection;
 
 /// Built-in integrations. The core `Adapter` contract remains open to others.
 pub enum Provider {
