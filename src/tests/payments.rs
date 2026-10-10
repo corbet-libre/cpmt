@@ -283,6 +283,7 @@ async fn followup_operations_use_only_the_same_members_provider_reference() {
         Err(Error::Rejected)
     ));
     child.binding = request().binding;
+    child.id = [4; 32];
     child.parent = Some(child.id);
     assert!(matches!(
         payments.execute(&child, 1).await,
@@ -292,6 +293,7 @@ async fn followup_operations_use_only_the_same_members_provider_reference() {
         .forget(&request().id, &request().binding)
         .await
         .unwrap();
+    child.id = [5; 32];
     child.parent = Some(request().id);
     assert!(matches!(
         payments.execute(&child, 1).await,
@@ -504,4 +506,99 @@ async fn changing_the_binding_key_cannot_rearm_a_payment_id() {
         Err(Error::KeyMismatch)
     ));
     assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+}
+
+struct Configured(Capabilities);
+impl Adapter for Configured {
+    fn capabilities(&self) -> Capabilities {
+        self.0.clone()
+    }
+    async fn execute(&self, _: &Instruction, _: &str, _: Option<&Private>) -> Result<Observation> {
+        Err(Error::Unsupported)
+    }
+    async fn observe(&self, _: &str, _: Option<&Private>) -> Result<Observation> {
+        Err(Error::Unsupported)
+    }
+}
+
+#[tokio::test]
+async fn malformed_adapter_configuration_and_cross_provider_parents_are_rejected() {
+    let (mut payments, _) = setup(MemoryJournal::default(), false);
+    for (id, operations) in [("", vec!["collect"]), ("empty", vec![]), ("bad", vec![""])] {
+        assert_eq!(
+            payments
+                .register(Arc::new(Configured(Capabilities {
+                    id: id.into(),
+                    operations: operations.into_iter().map(String::from).collect()
+                })))
+                .unwrap_err(),
+            Error::Invalid
+        );
+    }
+    payments
+        .register(Arc::new(Configured(Capabilities {
+            id: "other".into(),
+            operations: vec!["collect".into()],
+        })))
+        .unwrap();
+    payments.execute(&request(), 1).await.unwrap();
+    let mut child = request();
+    child.id = [2; 32];
+    child.parent = Some([1; 32]);
+    child.adapter = "other".into();
+    assert!(matches!(
+        payments.execute(&child, 1).await,
+        Err(Error::Rejected)
+    ));
+}
+
+#[tokio::test]
+async fn poisoned_journals_and_exhausted_revisions_never_grant_success() {
+    let journal = MemoryJournal::default();
+    let (payments, _) = setup(journal.clone(), false);
+    let mut outcome = payments.execute(&request(), 1).await.unwrap().outcome;
+    outcome.0.receipt = None;
+    outcome.0.valid_until = None;
+    assert!(
+        outcome
+            .evidence(&request().binding, State::Collected, 1, 20)
+            .is_err()
+    );
+    let record = {
+        let mut state = journal.0.lock().unwrap();
+        let record = state.records.values_mut().next().unwrap();
+        assert_eq!(record.revision(), 1);
+        record.revision = u64::MAX;
+        record.clone()
+    };
+    assert!(matches!(
+        payments.observe(&request().id, &request().binding).await,
+        Err(Error::Storage)
+    ));
+    assert_eq!(
+        payments
+            .forget(&request().id, &request().binding)
+            .await
+            .unwrap_err(),
+        Error::Storage
+    );
+    let shared = journal.clone();
+    assert!(
+        std::thread::spawn(move || {
+            let _guard = shared.0.lock().unwrap();
+            panic!("fixture interrupted writer");
+        })
+        .join()
+        .is_err()
+    );
+    assert_eq!(journal.bind(&[7; 32]).await.unwrap_err(), Error::Storage);
+    assert!(matches!(journal.get("key").await, Err(Error::Storage)));
+    assert!(matches!(
+        journal.begin("key", &record).await,
+        Err(Error::Storage)
+    ));
+    assert_eq!(
+        journal.replace("key", 0, &record).await.unwrap_err(),
+        Error::Storage
+    );
 }
