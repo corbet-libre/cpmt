@@ -16,7 +16,7 @@ crate-type = ["rlib"]
 default = []
 stripe = ["dep:async-stripe", "dep:stripe-client-core", "dep:miniserde", "dep:tracing", "dep:tokio"]
 storage = ["dep:crlt"]
-providers = ["dep:reqwest", "dep:rust_decimal", "dep:tracing", "dep:base64", "dep:time"]
+providers = ["dep:reqwest", "dep:rust_decimal", "dep:tracing", "dep:base64", "dep:time", "serde_json/arbitrary_precision"]
 
 [lints.rust]
 unsafe_code = "forbid"

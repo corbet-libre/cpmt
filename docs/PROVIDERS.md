@@ -24,7 +24,7 @@ not promise that every payment method/account supports every operation.
 ## Construction and credentials
 
 The host constructs `Provider`, `Limits` and `Rest::new(id, provider, credential,
-limits)`, then registers the adapter in `Registry`. See [CREDENTIALS.md](CREDENTIALS.md)
+limits)`, then registers the adapter in `Payments`. See [CREDENTIALS.md](CREDENTIALS.md)
 for secret references, OAuth refresh, rotation and the separate durable journal
 binding key. Provider clients do not read environment variables or secret files.
 

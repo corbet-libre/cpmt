@@ -450,6 +450,7 @@ fn constructors_validate_secrets_endpoints_limits_and_api_versions() {
         "http://example.test",
         "https://user@example.test",
         "https://u:p@example.test",
+        "https://:p@example.test",
         "https://example.test/?x=y",
         "https://example.test/#fragment",
     ] {
@@ -515,6 +516,16 @@ fn constructors_validate_secrets_endpoints_limits_and_api_versions() {
             Provider::Mollie { test_mode: None },
             Private::new(b"key".to_vec()),
             limits()
+        )
+        .is_err()
+    );
+    assert!(
+        Rest::build(
+            "id".into(),
+            Provider::Mollie { test_mode: None },
+            Private::new(b"key".to_vec()),
+            limits(),
+            Some(Url::parse("ftp://127.0.0.1").unwrap())
         )
         .is_err()
     );
@@ -865,7 +876,8 @@ async fn oauth_test_mode_stays_with_the_adapter_and_member_tokens_do_not_overrid
     assert!(calls[0].contains("\"testmode\":true"));
     assert!(calls[0].contains("member-token"));
     assert!(calls[1].starts_with("GET /payments/id_123?testmode=true "));
-    assert!(calls[2].starts_with("DELETE /payments/id_123?testmode=true "));
+    assert!(calls[2].starts_with("DELETE /payments/id_123 "));
+    assert!(calls[2].contains("\"testmode\":true"));
     let mut t = terms(&a.provider);
     t["testmode"] = json!(false);
     assert!(
@@ -946,4 +958,31 @@ fn validated_partial_ids_survive_without_claims_and_holds_keep_expiry() {
     let mut refund = object(&gc, "paid");
     refund["currency"] = json!("EUR");
     assert!(gc.state(&refund, "refunds", &amount()).is_err());
+}
+
+#[test]
+fn money_parsing_never_rounds_json_or_excess_decimal_precision() {
+    let provider = Provider::CoinGate { sandbox: false };
+    let value: Value =
+        serde_json::from_str(r#"{"price_amount":1.0000000000000000001,"price_currency":"CHF"}"#)
+            .unwrap();
+    let actual = provider.amount(&value).unwrap();
+    assert_eq!(actual.value, "1.0000000000000000001");
+    assert!(!actual.matches(Amount {
+        value: "1".into(),
+        currency: "CHF".into()
+    }));
+    let excess: Value = serde_json::from_str(
+        r#"{"price_amount":1.00000000000000000000000000001,"price_currency":"CHF"}"#,
+    )
+    .unwrap();
+    assert!(provider.amount(&excess).is_err());
+    assert!(
+        Amount {
+            value: "1.00000000000000000000000000001".into(),
+            currency: "CHF".into()
+        }
+        .validate()
+        .is_err()
+    );
 }

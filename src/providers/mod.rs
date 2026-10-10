@@ -175,7 +175,7 @@ impl Rest {
         key: Option<&str>,
     ) -> Result<Value> {
         let url = self.base.join(path).map_err(|_| Error::Invalid)?;
-        let read = method == Method::GET || method == Method::DELETE;
+        let read = method == Method::GET;
         let mut request = self.client.request(method, url);
         if let Provider::Mollie {
             test_mode: Some(mode),
@@ -418,7 +418,7 @@ impl Amount {
         Ok(amount)
     }
     fn validate(&self) -> Result<()> {
-        let value = Decimal::from_str(&self.value).map_err(|_| Error::Invalid)?;
+        let value = Decimal::from_str_exact(&self.value).map_err(|_| Error::Invalid)?;
         if value <= Decimal::ZERO
             || self.currency.is_empty()
             || self.currency.len() > 32
@@ -430,7 +430,8 @@ impl Amount {
     }
     fn matches(&self, other: Self) -> bool {
         self.currency == other.currency
-            && Decimal::from_str(&self.value).ok() == Decimal::from_str(&other.value).ok()
+            && Decimal::from_str_exact(&self.value).ok()
+                == Decimal::from_str_exact(&other.value).ok()
     }
 }
 fn forbidden(value: &Value) -> bool {

@@ -219,7 +219,6 @@ impl Provider {
         if let Self::Mollie {
             test_mode: Some(mode),
         } = self
-            && method == Method::POST
         {
             terms.insert("testmode".into(), json!(mode));
         }
@@ -372,9 +371,9 @@ impl Provider {
             if matches!(self, Self::Btcpay { .. }) {
                 let paid = value["paidAmount"]
                     .as_str()
-                    .and_then(|s| Decimal::from_str(s).ok())
+                    .and_then(|s| Decimal::from_str_exact(s).ok())
                     .ok_or(Error::Rejected)?;
-                if paid < Decimal::from_str(&expected.value).map_err(|_| Error::Rejected)? {
+                if paid < Decimal::from_str_exact(&expected.value).map_err(|_| Error::Rejected)? {
                     return Err(Error::Rejected);
                 }
             }
