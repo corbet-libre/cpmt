@@ -109,6 +109,8 @@ pub enum State {
     Authorized,
     /// The provider confirmed collection.
     Collected,
+    /// A protocol confirmed its settlement step; its scheme defines the effect.
+    Settled,
     /// A refund completed.
     Refunded,
     /// An external hold was released.

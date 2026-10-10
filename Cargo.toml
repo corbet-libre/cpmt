@@ -30,7 +30,7 @@ ed25519-dalek = { version = "3", features = ["serde"] }
 async-trait = "0.1"
 hmac = "0.13"
 zeroize = { version = "1", features = ["derive"] }
-async-stripe = { version = "0.41", default-features = false, features = ["runtime-tokio-hyper-rustls-webpki", "billing"], optional = true }
+async-stripe = { version = "0.41", default-features = false, features = ["runtime-tokio-hyper-rustls-webpki"], optional = true }
 tokio = { version = "1", features = ["time"], optional = true }
 crlt = { git = "https://git.corbet.ch/corbet-foss/crlt", branch = "main", optional = true }
 
