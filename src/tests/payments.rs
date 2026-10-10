@@ -383,3 +383,45 @@ async fn registration_storage_conflicts_and_diagnostics_are_safe() {
         Err(Error::Unsupported)
     ));
 }
+
+#[tokio::test]
+async fn one_receipt_cannot_fund_another_member_or_action() {
+    let journal = MemoryJournal::default();
+    let (payments, _) = setup(journal.clone(), false);
+    let first = payments.execute(&request(), 1).await.unwrap().outcome;
+    let mut repeated = request();
+    repeated.id = [2; 32];
+    let second = payments.execute(&repeated, 1).await.unwrap().outcome;
+    assert_eq!(
+        first
+            .evidence(&request().binding, State::Collected, 1, 20)
+            .unwrap()
+            .claim(),
+        second
+            .evidence(&repeated.binding, State::Collected, 1, 20)
+            .unwrap()
+            .claim()
+    );
+    repeated.id = [3; 32];
+    repeated.binding.subject = "other-member".into();
+    assert!(matches!(
+        payments.execute(&repeated, 1).await,
+        Err(Error::Conflict)
+    ));
+    assert_eq!(
+        payments
+            .outcome(&repeated.id, &repeated.binding)
+            .await
+            .unwrap()
+            .state(),
+        State::Unknown
+    );
+    repeated.id = [4; 32];
+    repeated.binding = request().binding;
+    repeated.binding.action = "other-action".into();
+    assert!(matches!(
+        payments.execute(&repeated, 1).await,
+        Err(Error::Conflict)
+    ));
+    assert_eq!(journal.0.lock().unwrap().receipts.len(), 1);
+}

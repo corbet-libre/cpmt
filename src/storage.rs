@@ -62,11 +62,36 @@ impl Journal for LibsqlJournal {
         let data = Zeroizing::new(serde_json::to_string(record).map_err(|_| Error::Storage)?);
         let expected = i64::try_from(expected_revision).map_err(|_| Error::Storage)?;
         let revision = i64::try_from(record.revision).map_err(|_| Error::Storage)?;
-        let count = self.0.execute("UPDATE cpmt_operations SET revision = ?1, record = ?2 WHERE operation = ?3 AND revision = ?4", params![revision, data.as_str(), key, expected])
+        let mut tx = self.0.tx().await.map_err(|_| Error::Storage)?;
+        if let Some((receipt, owner)) = record.receipt() {
+            let receipt = crate::hex(&receipt);
+            let owner = crate::hex(&owner);
+            let rows = tx
+                .query(
+                    "SELECT owner FROM cpmt_receipts WHERE receipt = ?1",
+                    [receipt.as_str()],
+                )
+                .await
+                .map_err(|_| Error::Storage)?;
+            if let Some(row) = rows.first() {
+                if row.get_str(0).map_err(|_| Error::Storage)? != owner {
+                    return Err(Error::Conflict);
+                }
+            } else {
+                tx.execute(
+                    "INSERT INTO cpmt_receipts (receipt, owner) VALUES (?1, ?2)",
+                    params![receipt, owner],
+                )
+                .await
+                .map_err(|_| Error::Storage)?;
+            }
+        }
+        let count = tx.execute("UPDATE cpmt_operations SET revision = ?1, record = ?2 WHERE operation = ?3 AND revision = ?4", params![revision, data.as_str(), key, expected])
             .await.map_err(|_| Error::Storage)?;
         if count != 1 {
             return Err(Error::Conflict);
         }
+        tx.commit().await.map_err(|_| Error::Storage)?;
         Ok(())
     }
 }

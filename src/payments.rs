@@ -1,6 +1,6 @@
 //! Shared execution contract. Adapters own provider behavior; callers own policy.
 use async_trait::async_trait;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::{
@@ -282,9 +282,15 @@ pub struct Execution {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Record {
     fingerprint: [u8; 32],
+    owner: [u8; 32],
     outcome: Snapshot,
     continuation: Option<Vec<u8>>,
     pub(crate) revision: u64,
+}
+impl Record {
+    pub(crate) fn receipt(&self) -> Option<([u8; 32], [u8; 32])> {
+        self.outcome.receipt.map(|receipt| (receipt, self.owner))
+    }
 }
 impl Drop for Record {
     fn drop(&mut self) {
@@ -307,7 +313,8 @@ pub trait Journal: Send + Sync {
     async fn get(&self, key: &str) -> Result<Option<Record>>;
     /// Insert if absent and return the existing entry on conflict, atomically.
     async fn begin(&self, key: &str, record: &Record) -> Result<Option<Record>>;
-    /// Replace only the expected revision. Conflicts must leave data unchanged.
+    /// Atomically replace the expected revision and reserve any receipt for its
+    /// context. Another context cannot claim it. Conflicts leave data unchanged.
     async fn replace(&self, key: &str, expected_revision: u64, record: &Record) -> Result<()>;
 }
 
@@ -319,6 +326,7 @@ pub struct MemoryJournal(Arc<Mutex<MemoryState>>);
 #[derive(Default)]
 struct MemoryState {
     records: BTreeMap<String, Record>,
+    receipts: BTreeMap<[u8; 32], [u8; 32]>,
 }
 #[async_trait]
 impl Journal for MemoryJournal {
@@ -343,6 +351,16 @@ impl Journal for MemoryJournal {
         let mut state = self.0.lock().map_err(|_| Error::Storage)?;
         if state.records.get(key).map(|r| r.revision) != Some(expected_revision) {
             return Err(Error::Conflict);
+        }
+        if let Some((receipt, owner)) = record.receipt() {
+            if state
+                .receipts
+                .get(&receipt)
+                .is_some_and(|previous| previous != &owner)
+            {
+                return Err(Error::Conflict);
+            }
+            state.receipts.insert(receipt, owner);
         }
         state.records.insert(key.into(), record.clone());
         Ok(())
@@ -438,6 +456,10 @@ impl<J: Journal> Payments<J> {
         };
         let initial = Record {
             fingerprint,
+            owner: self.mac(
+                &serde_json::to_vec(&("cpmt.owner.v2", &request.binding))
+                    .map_err(|_| Error::Invalid)?,
+            )?,
             outcome: Snapshot {
                 id: request.id,
                 adapter: request.adapter.clone(),

@@ -72,7 +72,7 @@ const PAID: &str = r#"{"id":"pi_fixture","object":"payment_intent","status":"suc
 async fn sdk_creates_hold_captures_and_observes_without_repeating_a_charge() {
     let (url, calls) = server(vec![HELD, PAID, PAID]).await;
     let mut adapter = adapter();
-    adapter.client = Client::from_url(url, "sk_test_fixture");
+    adapter.client = Client::from_url(url.as_str(), "sk_test_fixture");
     assert_eq!(adapter.capabilities().operations.len(), 8);
     let held = adapter
         .execute(
@@ -126,7 +126,7 @@ async fn refunds_and_recurring_arrangements_report_distinct_facts() {
     ])
     .await;
     let mut adapter = adapter();
-    adapter.client = Client::from_url(url, "sk_test_fixture");
+    adapter.client = Client::from_url(url.as_str(), "sk_test_fixture");
     let parent = Private::new(br#"{"id":"pi_fixture","resource":"payment_intents"}"#.to_vec());
     assert_eq!(
         adapter
@@ -173,7 +173,7 @@ async fn refunds_and_recurring_arrangements_report_distinct_facts() {
 async fn malformed_or_lost_provider_replies_stay_unknown() {
     let (url, calls) = server(vec!["", "{}", ""]).await;
     let mut adapter = adapter();
-    adapter.client = Client::from_url(url, "sk_test_fixture");
+    adapter.client = Client::from_url(url.as_str(), "sk_test_fixture");
     for _ in 0..2 {
         assert_eq!(
             adapter
