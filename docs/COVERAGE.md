@@ -35,3 +35,10 @@ The source gate requires a nonempty report, an exact file inventory matching the
 companion JSON, matching raw summary metadata, complete emitted branch counts
 and no duplicate, unknown or zero counters. It has no production exclusions.
 Actual browser/device execution remains separate from native coverage.
+
+The provider regressions also run against three temporary unsafe projections in
+the CI checkout: CoinGate terminal failure, GoCardless failure without retry
+qualification, and Square authorization without its approved amount. Each exact
+test must produce an assertion failure; compilation errors or empty selections
+cannot count. The runner restores the original source bytes before ordinary
+coverage. These controls exercise only inert loopback provider fixtures.

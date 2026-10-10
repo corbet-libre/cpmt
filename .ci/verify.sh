@@ -17,6 +17,7 @@ cargo deny --all-features check advisories
 cargo fmt --all --check
 cargo clippy --locked --all-features --all-targets -- -D warnings
 cargo test --locked --all-features
+python3 .ci/test-provider-regressions.py
 cargo check --locked --target wasm32-unknown-unknown
 version=$(python3 -c "import tomllib; print(next(p['version'] for p in tomllib.load(open('Cargo.lock','rb'))['package'] if p['name']=='wasm-bindgen'))")
 archive="wasm-bindgen-${version}-x86_64-unknown-linux-musl.tar.gz"
