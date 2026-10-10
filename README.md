@@ -45,7 +45,8 @@ Dispatch never retries automatically. Uncertain outcomes retain exposure and
 cannot authorize another charge. `forget` removes continuation through the
 caller port while preserving duplicate-dispatch protection.
 
-See [the contract](docs/CONTRACT.md), [credentials](docs/CREDENTIALS.md), and
+See [the integration catalogue](docs/CATALOGUE.md), [the contract](docs/CONTRACT.md),
+[credentials](docs/CREDENTIALS.md), and
 [coverage requirements](docs/COVERAGE.md). Tests use inert local fixtures;
 production and provider-sandbox calls are not executed or authorized by this work.
 

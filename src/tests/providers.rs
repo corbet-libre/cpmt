@@ -1110,3 +1110,37 @@ async fn configured_modes_and_action_kinds_are_checked_before_transport() {
     .unwrap();
     assert!(Adapter::observe(&adapter, &dispatch, None).await.is_err());
 }
+
+#[tokio::test]
+async fn preparing_terms_cannot_extend_the_transport_deadline() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let adapter = build(
+        "fixture".into(),
+        Provider::GoCardless { sandbox: false },
+        Private::new(b"fixture-secret".to_vec()),
+        limits(),
+        Some(Url::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap()),
+    )
+    .unwrap();
+    let request = instruction("gocardless.payment.create", terms(&adapter.provider));
+    let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let clock_reads = reads.clone();
+    let dispatch = Dispatch::new(
+        &request,
+        crate::test_support::permit(&request, Mode::Production),
+        0,
+        std::sync::Arc::new(move || {
+            if clock_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
+                0
+            } else {
+                100
+            }
+        }),
+    )
+    .unwrap();
+    assert!(matches!(
+        Adapter::execute(&adapter, &dispatch, "key", None).await,
+        Err(Error::Expired)
+    ));
+    assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 3);
+}

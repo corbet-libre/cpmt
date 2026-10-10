@@ -128,6 +128,9 @@ closed list of currencies for the shared adapter contract.
 
 ## Library choices and further integrations
 
+The broader [candidate catalogue](CATALOGUE.md) separates future capabilities,
+credentials, cost limitations and qualification requirements from built-in support.
+
 These small JSON integrations reuse current `reqwest`, `serde`, `rust_decimal`
 and `time` releases. Version ranges live in Cargo.toml; Cargo.lock records the CI
 snapshot. They avoid a custom HTTP/TLS stack, SDK retries and hidden diagnostics.
@@ -135,7 +138,7 @@ snapshot. They avoid a custom HTTP/TLS stack, SDK retries and hidden diagnostics
 Hyperswitch Prism was evaluated for much broader native connector reuse. Its
 request/response transformers avoid network orchestration, but the current
 native dependency graph failed the unchanged advisory gate on 2026-10-10
-(cpmt Crow run 30): vulnerable old hyper/h2, protobuf, quick-xml, TLS and time
+with vulnerable old hyper/h2, protobuf, quick-xml, TLS and time
 branches, plus unmaintained packages. `cargo update` cannot cross upstream major
 version constraints. Its server also has transport retry/event logging that
 requires separate assessment. Prism is **not a dependency or an implemented

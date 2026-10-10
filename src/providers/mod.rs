@@ -385,6 +385,7 @@ impl Adapter for Rest {
             Provider::Mollie { .. } | Provider::GoCardless { .. }
         )
         .then_some(key.as_str());
+        request.check(&self.id, self.mode)?;
         let response = self
             .send(
                 prepared.method.clone(),
