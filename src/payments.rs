@@ -387,7 +387,7 @@ pub struct Execution {
 mod journal;
 pub use journal::{Journal, MemoryJournal, Record};
 mod engine;
-pub use engine::Payments;
+pub use engine::{AccountIdentity, Payments, account_identity};
 
 pub(crate) fn identifier(value: &str) -> Result<()> {
     if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) {

@@ -17,6 +17,21 @@ pub struct Record {
     pub(crate) revision: u64,
 }
 impl Record {
+    /// Project an existing trusted record for hosts that permit only opaque
+    /// execution metadata at rest. The original continuation remains in RAM;
+    /// all request/receipt bindings, facts, fees and revision remain unchanged.
+    /// Reopening this projection cannot observe/refund a provider object unless
+    /// the host independently retained or re-established its actual authority.
+    pub fn without_continuation(&self) -> Self {
+        Self {
+            cost: self.cost.clone(),
+            fingerprint: self.fingerprint,
+            owner: self.owner,
+            outcome: self.outcome.clone(),
+            continuation: None,
+            revision: self.revision,
+        }
+    }
     /// The host atomically reserves this fee with `begin`, under its configured
     /// budget scope. Pending/unknown records retain maximum exposure on `replace`.
     pub fn cost(&self) -> &Reservation {
@@ -36,6 +51,9 @@ impl Record {
         self.revision
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;
 impl Drop for Record {
     fn drop(&mut self) {
         if let Some(bytes) = &mut self.continuation {

@@ -11,6 +11,65 @@ use std::{
 };
 use zeroize::Zeroize;
 
+/// Opaque equality commitment for one caller-configured account namespace.
+/// It establishes no payment, member identity or financial authority.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct AccountIdentity([u8; 32]);
+impl AccountIdentity {
+    /// Nonsecret equality commitment, suitable for caller-owned stable binding.
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+/// Bind the actual scope, provider-account identity, endpoint and mode through
+/// the executor's existing maintained HMAC engine and unambiguous JSON tuple.
+/// Pass a temporary key copy: it is wiped even when configuration is invalid.
+/// Replaceable credentials are deliberately absent from this equality contract.
+pub fn account_identity(
+    key_copy: &mut [u8; 32],
+    scope: &str,
+    provider: &str,
+    account: &str,
+    endpoint: &str,
+    mode: Mode,
+) -> Result<AccountIdentity> {
+    let key = Zeroizing::new(*key_copy);
+    key_copy.zeroize();
+    for value in [scope, provider, account] {
+        identifier(value)?;
+    }
+    if *key == [0; 32]
+        || endpoint.trim().is_empty()
+        || endpoint.len() > 2048
+        || endpoint.chars().any(char::is_control)
+        || mode == Mode::Simulation
+    {
+        return Err(Error::Invalid);
+    }
+    let mode = match mode {
+        Mode::Production => "production",
+        Mode::Sandbox => "sandbox",
+        Mode::Simulation => unreachable!(),
+    };
+    let bytes = serde_json::to_vec(&(
+        "cpmt.account-identity.v1",
+        scope,
+        provider,
+        account,
+        endpoint,
+        mode,
+    ))
+    .map_err(|_| Error::Invalid)?;
+    Ok(AccountIdentity(key_mac(&key, &bytes)))
+}
+
+fn key_mac(key: &[u8; 32], bytes: &[u8]) -> [u8; 32] {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts the fixed 32-byte key");
+    mac.update(bytes);
+    mac.finalize().into_bytes().into()
+}
+
 /// Registry and executor. No provider ordering, pricing, account balance or custody.
 pub struct Payments<J> {
     journal: J,
@@ -345,9 +404,6 @@ impl<J: Journal> Payments<J> {
         self.mac(&bytes)
     }
     fn mac(&self, bytes: &[u8]) -> [u8; 32] {
-        let mut mac = Hmac::<Sha256>::new_from_slice(self.key.as_ref())
-            .expect("HMAC accepts the fixed 32-byte key");
-        mac.update(bytes);
-        mac.finalize().into_bytes().into()
+        key_mac(&self.key, bytes)
     }
 }
