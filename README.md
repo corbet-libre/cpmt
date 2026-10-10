@@ -36,8 +36,9 @@ backups as well as the live database.
 
 `Outcome::evidence` checks a caller-selected fact and validity bound. `Evidence`
 is an opaque in-process value: it cannot be deserialized from a client. The gate
-host checks its context and provider, then atomically spends its receipt-derived
-claim while recording minimal gate metadata. No receipt means no gate evidence.
+host checks its context and provider. Community gates atomically spend its
+receipt-derived claim; global gates accept a reusable fact for their bound check.
+Both record minimal gate metadata. No receipt means no gate evidence.
 An active subscription or a verified authorization does not prove collection.
 
 Production requires a durable journal, a stable injected random binding key,
