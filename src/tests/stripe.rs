@@ -197,19 +197,25 @@ async fn refunds_and_recurring_arrangements_report_distinct_facts() {
 
 #[tokio::test]
 async fn malformed_or_lost_provider_replies_stay_unknown() {
-    let (url, calls) = server(vec![
+    let malformed = [
         "",
         "{}",
+        r#"{"id":"pi_fixture"}"#,
+        r#"{"id":"pi_fixture","object":"payment_intent"}"#,
+        r#"{"id":null,"object":"payment_intent","status":"succeeded"}"#,
+        r#"{"id":"pi_fixture","object":"payment_intent","status":true}"#,
+        r#"{"id":"pi_fixture","object":"payment_intent","status":"succeeded","client_secret":false}"#,
         r#"{"id":"../wrong","object":"payment_intent","status":"succeeded"}"#,
-        "",
-    ])
-    .await;
+    ];
+    let mut replies = malformed.to_vec();
+    replies.push("");
+    let (url, calls) = server(replies).await;
     let mut adapter = adapter();
     adapter.client = ClientBuilder::new("sk_test_fixture")
         .url(format!("{url}/"))
         .build()
         .unwrap();
-    for _ in 0..3 {
+    for _ in malformed {
         assert_eq!(
             adapter
                 .execute(
