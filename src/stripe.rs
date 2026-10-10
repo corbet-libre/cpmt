@@ -61,7 +61,7 @@ const ROUTES: &[(&str, &str, &str, &str)] = &[
 struct Reference {
     resource: String,
     id: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     financial: Option<Financial>,
 }
 
@@ -75,13 +75,12 @@ impl Financial {
         let amount = terms
             .get("amount_to_capture")
             .or_else(|| terms.get("amount"))
-            .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
-            .or_else(|| parent.map(|p| p.amount))?;
+            .map(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
+            .unwrap_or_else(|| parent.map(|p| p.amount))?;
         let currency = terms
             .get("currency")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .or_else(|| parent.map(|p| p.currency.clone()))?;
+            .map(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_else(|| parent.map(|p| p.currency.clone()))?;
         Some(Self { amount, currency })
     }
     fn satisfied(
@@ -156,12 +155,30 @@ impl Stripe {
         {
             return Err(Error::Invalid);
         }
+        let client = ClientBuilder::new(secret)
+            .build()
+            .map_err(|_| Error::Invalid)?;
+        Self::from_client(id, client, timeout, max_input_bytes, mode)
+    }
+
+    /// Inject a trusted maintained SDK client, including host-owned credentials
+    /// and transport. The host owns its endpoint and TLS configuration. Per-call
+    /// no-retry strategy, deadlines, cost checks and private tracing still apply.
+    pub fn from_client(
+        id: String,
+        client: Client,
+        timeout: Duration,
+        max_input_bytes: usize,
+        mode: Mode,
+    ) -> Result<Self> {
+        crate::payments::identifier(&id)?;
+        if timeout.is_zero() || max_input_bytes == 0 || mode == Mode::Simulation {
+            return Err(Error::Invalid);
+        }
         Ok(Self {
             mode,
             id,
-            client: ClientBuilder::new(secret)
-                .build()
-                .map_err(|_| Error::Invalid)?,
+            client,
             timeout,
             max_input_bytes,
         })
@@ -304,6 +321,20 @@ impl Stripe {
     }
 }
 
+// Preserve the complete typed provider error available from the maintained SDK.
+// Transport/configuration diagnostics can contain local URLs, so they remain
+// redacted. The SDK does not expose unknown error extensions or malformed bytes.
+fn provider_error(error: stripe::StripeError, mut observation: Observation) -> Observation {
+    if let stripe::StripeError::Stripe(reply, status) = error {
+        observation.upstream.push(ProviderReply {
+            phase: "error",
+            http_status: Some(status),
+            payload: Private::new(serde_json::to_vec(&reply).expect("SDK response serializes")),
+        });
+    }
+    observation
+}
+
 impl Adapter for Stripe {
     fn mode(&self) -> Mode {
         self.mode
@@ -398,7 +429,8 @@ impl Adapter for Stripe {
                 Ok(observation)
             }
             // A transport/server/decoding error cannot prove that nothing happened.
-            _ => Ok(uncertain()),
+            Ok(Err(error)) => Ok(provider_error(error, uncertain())),
+            Err(_) => Ok(uncertain()),
         }
     }
     async fn observe(
@@ -436,10 +468,16 @@ impl Adapter for Stripe {
                 }
                 Ok(observation)
             }
-            _ => Ok(Observation {
-                continuation: Some(Private::new(continuation.expose().to_vec())),
-                ..Observation::fact(State::Unknown)
-            }),
+            result => {
+                let unknown = Observation {
+                    continuation: Some(Private::new(continuation.expose().to_vec())),
+                    ..Observation::fact(State::Unknown)
+                };
+                Ok(match result {
+                    Ok(Err(error)) => provider_error(error, unknown),
+                    _ => unknown,
+                })
+            }
         }
     }
 }

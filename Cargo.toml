@@ -14,7 +14,7 @@ crate-type = ["rlib"]
 
 [features]
 default = []
-stripe = ["dep:async-stripe", "dep:stripe-client-core", "dep:miniserde", "dep:tracing", "dep:tokio"]
+stripe = ["dep:async-stripe", "dep:stripe-client-core", "dep:stripe-shared", "dep:miniserde", "dep:tracing", "dep:tokio"]
 providers = ["dep:reqwest", "dep:rust_decimal", "dep:tracing", "dep:base64", "dep:time", "serde_json/arbitrary_precision"]
 
 [lints.rust]
@@ -31,6 +31,7 @@ hmac = "0.13"
 zeroize = { version = "1", features = ["derive"] }
 cfbk = { git = "https://git.corbet.ch/corbet-foss/cfbk", branch = "main" }
 async-stripe = { version = "1.0.0-rc.9", default-features = false, features = ["rustls-tls-webpki-roots", "rustls-aws-lc-rs", "redact-generated-debug"], optional = true }
+stripe-shared = { package = "async-stripe-shared", version = "1.0.0-rc.9", features = ["serialize"], optional = true }
 stripe-client-core = { package = "async-stripe-client-core", version = "1.0.0-rc.9", optional = true }
 miniserde = { version = "0.1", optional = true }
 tracing = { version = "0.1", optional = true }

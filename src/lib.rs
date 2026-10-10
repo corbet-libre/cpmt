@@ -11,6 +11,8 @@ pub mod details;
 pub mod payments;
 #[cfg(feature = "providers")]
 pub mod providers;
+pub mod run;
+pub mod simulation;
 #[cfg(feature = "stripe")]
 pub mod stripe;
 

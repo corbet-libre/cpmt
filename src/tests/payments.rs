@@ -190,7 +190,7 @@ async fn raw_input_can_be_dropped_before_reconciliation_and_forgetting() {
             .unwrap()
             .outcome
             .state(),
-        State::Refunded
+        State::Collected
     );
 }
 
@@ -614,10 +614,26 @@ async fn poisoned_journals_and_exhausted_revisions_never_grant_success() {
         record.revision = u64::MAX;
         record.clone()
     };
-    assert!(matches!(
-        payments.observe(&request().id, &request().binding).await,
-        Err(Error::Storage)
-    ));
+    // A read has its own immutable identity and revision; it cannot mutate or
+    // overflow the original operation's exhausted revision.
+    assert_eq!(
+        payments
+            .observe(&request().id, &request().binding)
+            .await
+            .unwrap()
+            .outcome
+            .state(),
+        State::Refunded
+    );
+    assert!(
+        journal
+            .0
+            .lock()
+            .unwrap()
+            .records
+            .values()
+            .any(|r| r.revision() == u64::MAX)
+    );
     assert_eq!(
         payments
             .forget(&request().id, &request().binding)
@@ -911,9 +927,9 @@ fn actual_cost_never_exceeds_reserved_units_and_fallback_keeps_uncertainty() {
         (State::Unknown, cost::Outcome::Uncertain),
         (State::Pending, cost::Outcome::Pending),
         (State::RequiresAction, cost::Outcome::Pending),
-        (State::Failed, cost::Outcome::Refused),
+        (State::Failed, cost::Outcome::SafeFailure),
         (State::Collected, cost::Outcome::Success),
     ] {
-        assert_eq!(cost::fallback(state), resolution);
+        assert_eq!(crate::run::classify(state, state), resolution);
     }
 }

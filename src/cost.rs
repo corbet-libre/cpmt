@@ -125,15 +125,3 @@ impl std::ops::Deref for Dispatch<'_> {
         self.request
     }
 }
-
-/// Terminal interpretation for the shared fallback planner. A provider refusal
-/// is not automatically safe to try at another payment provider.
-pub fn fallback(state: crate::payments::State) -> Outcome {
-    use crate::payments::State;
-    match state {
-        State::Unknown => Outcome::Uncertain,
-        State::Pending | State::RequiresAction => Outcome::Pending,
-        State::Failed => Outcome::Refused,
-        _ => Outcome::Success,
-    }
-}

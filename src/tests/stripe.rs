@@ -5,12 +5,16 @@ use tokio::{
 };
 
 async fn server(replies: Vec<&str>) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+    server_status(replies.into_iter().map(|r| (200, r.to_owned())).collect()).await
+}
+async fn server_status(
+    replies: Vec<(u16, String)>,
+) -> (String, tokio::task::JoinHandle<Vec<String>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
-    let replies: Vec<String> = replies.into_iter().map(String::from).collect();
     let task = tokio::spawn(async move {
         let mut requests = Vec::new();
-        for reply in replies {
+        for (status, reply) in replies {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut bytes = Vec::new();
             let mut buffer = [0; 4096];
@@ -33,7 +37,7 @@ async fn server(replies: Vec<&str>) -> (String, tokio::task::JoinHandle<Vec<Stri
             }
             requests.push(String::from_utf8(bytes).unwrap());
             if !reply.is_empty() {
-                stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",reply.len(),reply).as_bytes()).await.unwrap();
+                stream.write_all(format!("HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",reply.len(),reply).as_bytes()).await.unwrap();
             }
         }
         requests
@@ -605,4 +609,93 @@ impl Stripe {
         )?;
         Adapter::observe(self, &auth, previous).await
     }
+}
+
+#[tokio::test]
+async fn financial_projection_and_complete_private_sdk_results_use_real_response_fields() {
+    let body = r#"{"id":"pi_fixture","object":"payment_intent","status":"succeeded","amount":1200,"amount_received":1200,"currency":"chf","billing_details":{"name":"private fixture"},"extension":{"unrecognized":true}}"#;
+    let error = r#"{"error":{"type":"card_error","message":"private issuer detail","charge":"ch_fixture"}}"#;
+    let (url, calls) = server_status(vec![
+        (200, body.into()),
+        (402, error.into()),
+        (402, error.into()),
+    ])
+    .await;
+    let adapter = Stripe::from_client(
+        "stripe".into(),
+        ClientBuilder::new("sk_test_fixture")
+            .url(format!("{url}/"))
+            .build()
+            .unwrap(),
+        Duration::from_secs(2),
+        8192,
+        Mode::Sandbox,
+    )
+    .unwrap();
+    let request = request(
+        "stripe.intent.create",
+        serde_json::json!({"amount":1200,"currency":"CHF"}),
+    );
+    let result = adapter.execute(&request, "create", None).await.unwrap();
+    assert!(result.satisfies_terms);
+    let full: Value = serde_json::from_slice(result.upstream[0].payload.expose()).unwrap();
+    assert_eq!(full["extension"]["unrecognized"], true);
+    assert!(
+        String::from_utf8_lossy(result.continuation.as_ref().unwrap().expose()).contains("1200")
+    );
+    assert!(
+        !String::from_utf8_lossy(result.continuation.as_ref().unwrap().expose())
+            .contains("private fixture")
+    );
+    let failed = adapter.execute(&request, "failed", None).await.unwrap();
+    assert_eq!(failed.state, State::Unknown);
+    assert_eq!(failed.upstream[0].http_status, Some(402));
+    assert!(
+        String::from_utf8_lossy(failed.upstream[0].payload.expose())
+            .contains("private issuer detail")
+    );
+    let read = adapter
+        .observe("stripe.intent.create", result.continuation.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(read.state, State::Unknown);
+    assert!(read.continuation.is_some());
+    assert_eq!(read.upstream.len(), 1);
+    assert_eq!(calls.await.unwrap().len(), 3);
+    let financial = Financial {
+        amount: 1200,
+        currency: "chf".into(),
+    };
+    for (state, amount, received, capturable, expected) in [
+        (State::Collected, Some(1200), Some(1200), None, true),
+        (State::Collected, Some(1200), Some(100), None, false),
+        (State::Authorized, None, None, Some(1200), true),
+        (State::Refunded, Some(1200), None, None, true),
+        (State::Released, Some(1200), None, None, true),
+        (State::Pending, Some(1200), None, None, false),
+    ] {
+        assert_eq!(
+            financial.satisfied(amount, received, capturable, Some("CHF"), state),
+            expected
+        );
+    }
+    assert!(!financial.satisfied(Some(1200), Some(1200), None, None, State::Collected));
+    assert!(!financial.satisfied(Some(1200), Some(1200), None, Some("usd"), State::Collected));
+    for terms in [
+        serde_json::json!({"amount":"bad"}),
+        serde_json::json!({"currency":3}),
+    ] {
+        assert!(Financial::from_terms(terms.as_object().unwrap(), Some(&financial)).is_none());
+    }
+    assert_eq!(
+        Financial::from_terms(
+            serde_json::json!({"amount_to_capture":"500"})
+                .as_object()
+                .unwrap(),
+            Some(&financial)
+        )
+        .unwrap()
+        .amount,
+        500
+    );
 }

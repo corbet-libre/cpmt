@@ -290,6 +290,11 @@ impl fmt::Debug for Outcome {
     }
 }
 impl Outcome {
+    /// Whether the adapter established the exact financial terms, including
+    /// amount evidence. This does not itself grant access or change policy.
+    pub fn satisfies_terms(&self) -> bool {
+        self.0.satisfies_terms
+    }
     /// The environment that established this fact. Sandbox facts are not proofs.
     pub fn mode(&self) -> Mode {
         if self.0.sandbox {
