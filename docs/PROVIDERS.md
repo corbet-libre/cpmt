@@ -100,17 +100,26 @@ a payment fact; observe fetches the authenticated provider resource.
   currency and expected amount. Square cash/external accounting records do not
   establish processed collection; partial authorizations remain Unknown for the
   requested full amount. They can still be cancelled through their reference.
+  Square holds also require `approved_money` in the expected currency to cover
+  the bound principal: an edited `amount_money` alone does not establish bank
+  reauthorization. An approved amount may include an additional tip.
 - Known Square/Mollie authorization deadlines limit evidence validity. A malformed
   deadline cannot produce Authorized evidence. A cancellation reports Cancelled;
   it is not automatically proof that a hold was released.
 - Mollie paid status with a partial captured amount or unresolved manual capture
   is insufficient for full collection. GoCardless confirmation is a current
   collection fact, not an irreversible guarantee; later failures/chargebacks
-  withdraw positive evidence on observation. BTCPay manual marking, partial/late
+  withdraw positive evidence on observation. A GoCardless failed payment remains
+  Unknown unless `retry_if_possible` is explicitly false: Success+ may otherwise
+  resubmit it. The adapter does not alter the caller's retry configuration.
+  BTCPay manual marking, partial/late
   payment and unknown additional statuses do not establish settlement. Confirmed
   settlement also checks the actual paid amount. CoinGate's `paid` is its
   authenticated settlement decision; conversion and accepted-payment rules belong
   to that provider/account, not to a local chain-confirmation calculation.
+  CoinGate `expired`, `invalid` and `canceled` stay Unknown and block cascade
+  fallback: late confirmations or review can still result in settlement. Their
+  retained ID supports read-only reconciliation without creating another order.
 - The journal retains only resource ID/type, the parent payment ID when needed,
   and the expected amount/currency needed to validate later reads. The keyed
   receipt digest contains no billing/KYC data. Raw bodies, member tokens, links,
@@ -155,8 +164,11 @@ provider operations through the same adapter boundary and fixture suite.
 Primary contracts: [Mollie](https://docs.mollie.com/reference/create-payment),
 [Square](https://developer.squareup.com/reference/square/payments-api/create-payment),
 [GoCardless](https://docs.gocardless.com/docs/api-reference/payment),
+[GoCardless automatic retries](https://docs.gocardless.com/docs/optimise/reduced-failed-payments-with-success-plus),
 [BTCPay Greenfield](https://docs.btcpayserver.org/API/Greenfield/v1/swagger.json),
 [CoinGate OpenAPI](https://github.com/coingate/openapi/blob/main/reference/v2.json),
+[CoinGate late completion](https://support.coingate.com/hc/en-us/articles/10420045425948),
+[Square authorization updates](https://developer.squareup.com/docs/payments-api/update-payments),
 [Prism native integration](https://github.com/juspay/hyperswitch-prism/blob/main/sdk/rust/README.md).
 
 ## Cost and information modes

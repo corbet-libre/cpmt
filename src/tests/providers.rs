@@ -66,6 +66,11 @@ fn object(provider: &Provider, status: &str) -> Value {
     map.insert("id".into(), json!("id_123"));
     map.insert("status".into(), json!(status));
     map.insert("source_type".into(), json!("CARD"));
+    map.insert("retry_if_possible".into(), json!(false));
+    map.insert(
+        "approved_money".into(),
+        json!({"amount":10,"currency":"CHF"}),
+    );
     map.insert("storeId".into(), json!("store"));
     map.insert("additionalStatus".into(), json!("None"));
     map.insert("paidAmount".into(), json!("10"));
@@ -350,9 +355,9 @@ fn provider_states_do_not_confuse_partial_recorded_or_manual_payments_with_colle
             ("confirming", State::Pending),
             ("paid", State::Settled),
             ("refunded", State::Refunded),
-            ("expired", State::Failed),
-            ("invalid", State::Failed),
-            ("canceled", State::Failed),
+            ("expired", State::Unknown),
+            ("invalid", State::Unknown),
+            ("canceled", State::Unknown),
             ("future", State::Unknown),
         ],
     ];
@@ -1144,3 +1149,6 @@ async fn preparing_terms_cannot_extend_the_transport_deadline() {
     ));
     assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 3);
 }
+
+#[path = "provider_safety.rs"]
+mod safety;

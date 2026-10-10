@@ -29,6 +29,9 @@ impl Provider {
                 (false, "paid_out") => State::Collected,
                 (true, "paid") => State::Refunded,
                 (false, "cancelled") => State::Cancelled,
+                // Success+ can resubmit a failed payment. Only explicit provider
+                // confirmation that automatic retry is off permits fallback.
+                (false, "failed") if value["retry_if_possible"] != false => State::Unknown,
                 (_, "pending_customer_approval") => State::RequiresAction,
                 (_, "pending_submission" | "submitted" | "pending" | "created") => State::Pending,
                 (_, "failed" | "customer_approval_denied" | "bounced" | "funds_returned") => {
@@ -53,7 +56,9 @@ impl Provider {
                 "confirming" => State::Pending,
                 "paid" => State::Settled,
                 "refunded" => State::Refunded,
-                "expired" | "invalid" | "canceled" => State::Failed,
+                // These invoices may still settle after late confirmation, or
+                // hold funds under review. They do not authorize a new charge.
+                "expired" | "invalid" | "canceled" => State::Unknown,
                 _ => State::Unknown,
             },
         };
@@ -75,6 +80,17 @@ impl Provider {
                 )
             {
                 return Err(Error::Rejected);
+            }
+            if matches!(self, Self::Square { .. }) && state == State::Authorized {
+                // An edited amount_money need not have been reauthorized.
+                // approved_money can also include a tip above the bound principal.
+                let approved = Amount::from(&value["approved_money"], "amount", "currency")?;
+                if approved.currency != expected.currency
+                    || Decimal::from_str_exact(&approved.value).expect("validated amount")
+                        < Decimal::from_str_exact(&expected.value).expect("validated amount")
+                {
+                    return Err(Error::Rejected);
+                }
             }
             if matches!(self, Self::Btcpay { .. }) {
                 let paid = value["paidAmount"]
