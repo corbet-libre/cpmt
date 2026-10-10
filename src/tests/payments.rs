@@ -23,6 +23,9 @@ struct Provider {
     error: bool,
 }
 impl Adapter for Provider {
+    fn max_input_bytes(&self) -> usize {
+        16384
+    }
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             id: "test".into(),
@@ -431,6 +434,9 @@ struct SlowProvider {
     started: tokio::sync::Notify,
 }
 impl Adapter for SlowProvider {
+    fn max_input_bytes(&self) -> usize {
+        16384
+    }
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             id: "test".into(),
@@ -510,6 +516,9 @@ async fn changing_the_binding_key_cannot_rearm_a_payment_id() {
 
 struct Configured(Capabilities);
 impl Adapter for Configured {
+    fn max_input_bytes(&self) -> usize {
+        16384
+    }
     fn capabilities(&self) -> Capabilities {
         self.0.clone()
     }
@@ -601,4 +610,18 @@ async fn poisoned_journals_and_exhausted_revisions_never_grant_success() {
         journal.replace("key", 0, &record).await.unwrap_err(),
         Error::Storage
     );
+}
+
+#[tokio::test]
+async fn adapter_input_limits_apply_before_journaling_or_dispatch() {
+    let journal = MemoryJournal::default();
+    let (payments, provider) = setup(journal.clone(), false);
+    let mut request = request();
+    request.evidence = Private::new(vec![0; 16384]);
+    assert!(matches!(
+        payments.execute(&request, 1).await,
+        Err(Error::Invalid)
+    ));
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+    assert!(journal.0.lock().unwrap().records.is_empty());
 }

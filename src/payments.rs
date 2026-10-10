@@ -172,6 +172,8 @@ impl Observation {
 
 /// Adapter implementation is trusted code. Never construct one from member input.
 pub trait Adapter: Send + Sync {
+    /// Explicit bound on combined terms/evidence bytes, checked before hashing.
+    fn max_input_bytes(&self) -> usize;
     /// Enumerate exactly the implemented operations of this configured adapter.
     fn capabilities(&self) -> Capabilities;
     /// Execute once with the stable upstream idempotency key. Ambiguous results
@@ -192,6 +194,7 @@ pub trait Adapter: Send + Sync {
 
 type Pending<'a> = Pin<Box<dyn Future<Output = Result<Observation>> + Send + 'a>>;
 trait ErasedAdapter: Send + Sync {
+    fn max_input_bytes(&self) -> usize;
     fn capabilities(&self) -> Capabilities;
     fn execute<'a>(
         &'a self,
@@ -202,6 +205,9 @@ trait ErasedAdapter: Send + Sync {
     fn observe<'a>(&'a self, operation: &'a str, continuation: Option<&'a Private>) -> Pending<'a>;
 }
 impl<A: Adapter> ErasedAdapter for A {
+    fn max_input_bytes(&self) -> usize {
+        Adapter::max_input_bytes(self)
+    }
     fn capabilities(&self) -> Capabilities {
         Adapter::capabilities(self)
     }
@@ -452,7 +458,7 @@ impl<J: Journal> Payments<J> {
     pub fn register<A: Adapter + 'static>(&mut self, adapter: Arc<A>) -> Result<()> {
         let capabilities = Adapter::capabilities(adapter.as_ref());
         identifier(&capabilities.id)?;
-        if capabilities.operations.is_empty() {
+        if capabilities.operations.is_empty() || Adapter::max_input_bytes(adapter.as_ref()) == 0 {
             return Err(Error::Invalid);
         }
         for operation in &capabilities.operations {
@@ -481,6 +487,15 @@ impl<J: Journal> Payments<J> {
             .contains(&request.operation)
         {
             return Err(Error::Unsupported);
+        }
+        if request
+            .terms
+            .expose()
+            .len()
+            .saturating_add(request.evidence.expose().len())
+            > adapter.max_input_bytes()
+        {
+            return Err(Error::Invalid);
         }
         validate_binding(&request.binding)?;
         if request.id == [0; 32] || request.expires_at == 0 {

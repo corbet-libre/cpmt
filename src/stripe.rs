@@ -180,6 +180,9 @@ impl Stripe {
 }
 
 impl Adapter for Stripe {
+    fn max_input_bytes(&self) -> usize {
+        self.max_input_bytes
+    }
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             id: self.id.clone(),

@@ -14,13 +14,13 @@ pub mod stripe;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
 
-/// Entitlement as asserted by the independent intermediary.
+/// Signed entitlement asserted by a configured provider.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Entitlement {
     /// Opaque member commitment (e.g. hash of member id + community).
     /// Must not be a provider customer id the operator could resolve.
     pub commitment: String,
-    /// Expiry as unix seconds per host clock. Automatic renewal updates this.
+    /// Expiry as unix seconds per host clock. The issuer supplies this bound.
     pub valid_until: u64,
     /// Unique assertion id for replay protection within the validity window.
     pub assertion_id: String,
