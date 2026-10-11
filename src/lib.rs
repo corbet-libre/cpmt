@@ -16,7 +16,7 @@ pub mod simulation;
 #[cfg(feature = "stripe")]
 pub mod stripe;
 
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, VerifyingKey};
 use sha2::{Digest, Sha256};
 
 /// Signed entitlement asserted by a configured provider.
@@ -103,7 +103,7 @@ pub fn verify(
     );
     let sig = Signature::from_slice(&entitlement.signature).map_err(|_| Error::Rejected)?;
     intermediary_key
-        .verify(&msg, &sig)
+        .verify_strict(&msg, &sig)
         .map_err(|_| Error::Rejected)?;
     Ok(())
 }
