@@ -199,7 +199,7 @@ dependencies = [
 [[package]]
 name = "cfbk"
 version = "0.0.0"
-source = "git+https://git.corbet.ch/corbet-foss/cfbk?branch=main#74928e72164e93116691206cc6873fb23cee10bd"
+source = "git+https://git.corbet.ch/corbet-foss/cfbk?branch=main#f228754724e29de2fb71f2bc9b54fcb5f51dba4a"
 
 [[package]]
 name = "cfg-if"
