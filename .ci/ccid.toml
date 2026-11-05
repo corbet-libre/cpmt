@@ -14,10 +14,12 @@ cache_tools = [["rustc", "-vV"], ["cargo", "--version"], ["python3", "--version"
 cache_outputs = ["coverage.json", "coverage.lcov", "coverage.txt"]
 
 [render]
-tool_revision = "e38f347d6941aa105ac4b55a0d4b8fec2ef22433"
-
+tool_revision = "bd9aff07073185fb0a3503bab331aedefb6d8fd2"
+tool_sha256 = "38c0eadf2a2adb406f83c7d4892bc01a0a10b95671e1e671358e43a257bb5d23"
 [jobs.verify]
-scheduler = "crow"
+scheduler = "forgejo"
+runs_on = "heavy"
 checks = ["verify"]
-workflow = "repository-jobs"
+workflow = "ci"
 command = ["bash", ".ci/run-cached.sh"]
+events = ["manual"]
