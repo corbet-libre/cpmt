@@ -97,6 +97,15 @@ struct Prepared {
     amount: Amount,
 }
 
+/// reqwest is built with `rustls-no-provider`: the process default must be
+/// selected before a client is built. Keep an embedding application's
+/// provider; otherwise pick the maintained ring provider.
+fn install_provider() {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+}
+
 impl Rest {
     /// Inject an account credential, provider configuration and resource limits.
     /// No environment, filesystem, secret-manager or provider-account discovery.
@@ -169,6 +178,7 @@ impl Rest {
             }
             _ => {}
         }
+        install_provider();
         let client = Client::builder()
             .default_headers(headers)
             .timeout(limits.timeout)

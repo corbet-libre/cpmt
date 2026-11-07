@@ -15,7 +15,7 @@ crate-type = ["rlib"]
 [features]
 default = []
 stripe = ["dep:async-stripe", "dep:stripe-client-core", "dep:stripe-shared", "dep:miniserde", "dep:tracing", "dep:tokio"]
-providers = ["dep:reqwest", "dep:rust_decimal", "dep:tracing", "dep:base64", "dep:time", "serde_json/arbitrary_precision"]
+providers = ["dep:reqwest", "dep:rustls", "dep:rust_decimal", "dep:tracing", "dep:base64", "dep:time", "serde_json/arbitrary_precision"]
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -30,7 +30,7 @@ ed25519-dalek = { version = "3", features = ["serde"] }
 hmac = "0.13"
 zeroize = { version = "1", features = ["derive"] }
 cfbk = { git = "https://git.corbet.ch/corbet-foss/cfbk", branch = "main" }
-async-stripe = { version = "1.0.0-rc.9", default-features = false, features = ["rustls-tls-webpki-roots", "rustls-aws-lc-rs", "redact-generated-debug"], optional = true }
+async-stripe = { version = "1.0.0-rc.9", default-features = false, features = ["rustls-tls-webpki-roots", "rustls-ring", "redact-generated-debug"], optional = true }
 stripe-shared = { package = "async-stripe-shared", version = "1.0.0-rc.9", features = ["serialize"], optional = true }
 stripe-client-core = { package = "async-stripe-client-core", version = "1.0.0-rc.9", optional = true }
 miniserde = { version = "0.1", optional = true }
@@ -39,7 +39,8 @@ tokio = { version = "1", features = ["time"], optional = true }
 rust_decimal = { version = "1", optional = true }
 time = { version = "0.3", features = ["parsing"], optional = true }
 base64 = { version = "0.23", optional = true }
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query"], optional = true }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json", "query"], optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring"], optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "time", "net", "io-util", "sync"] }
