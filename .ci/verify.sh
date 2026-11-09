@@ -22,7 +22,7 @@ python3 .ci/test-provider-regressions.py
 cargo check --locked --target wasm32-unknown-unknown
 version=$(python3 -c "import tomllib; print(next(p['version'] for p in tomllib.load(open('Cargo.lock','rb'))['package'] if p['name']=='wasm-bindgen'))")
 archive="wasm-bindgen-${version}-x86_64-unknown-linux-musl.tar.gz"
-base="https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${version}"
+base="${WASM_BINDGEN_DOWNLOAD_BASE:-https://github.com/wasm-bindgen/wasm-bindgen/releases/download}/${version}"
 mkdir -p "$RUNNER_TEMP/cpmt-wasm-runner"
 (cd "$RUNNER_TEMP/cpmt-wasm-runner" && curl --user-agent dependency-ci --fail --location --retry 3 --remote-name "$base/$archive" && curl --user-agent dependency-ci --fail --location --retry 3 --remote-name "$base/$archive.sha256sum" && checksum=$(cut -d ' ' -f1 "$archive.sha256sum") && printf '%s  %s\n' "$checksum" "$archive" | sha256sum --check && tar -xzf "$archive" --strip-components=1)
 export PATH="$RUNNER_TEMP/cpmt-wasm-runner:$PATH"
