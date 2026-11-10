@@ -13,7 +13,6 @@ export GITHUB_PATH="${GITHUB_PATH:-$RUNNER_TEMP/github_path}"
 touch "$GITHUB_PATH"
 cp Cargo.lock "$ARTIFACT_ROOT/Cargo.lock"
 python3 .github/check-first-party.py
-bash .ci/update-our-crates.sh
 cargo deny --all-features check advisories
 cargo fmt --all --check
 cargo clippy --locked --all-features --all-targets -- -D warnings
