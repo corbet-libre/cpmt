@@ -17,7 +17,7 @@ cache_outputs = ["coverage.json", "coverage.lcov", "coverage.txt"]
 render_schema = 2
 [jobs.verify]
 scheduler = "forgejo"
-runs_on = "heavy"
+runs_on = "linux"
 checks = ["verify"]
 workflow = "ci"
 command = ["bash", ".ci/run-cached.sh"]
