@@ -5,7 +5,8 @@ edition = "2024"
 rust-version = "1.93"
 description = "Payment adapter execution and minimal gate evidence without custody or commercial policy"
 license = "LGPL-3.0-only WITH LGPL-3.0-linking-exception"
-repository = "https://git.corbet.ch/corbet-libre/cpmt.git"
+repository = "https://git.corbet.ch/corbet-libre/cpmt"
+homepage = "https://git.corbet.ch/corbet-libre/cpmt"
 readme = "README.md"
 include = ["Cargo.toml", "src/**", "docs/**", "README.md", "CHANGELOG.md", "LICENSE", "LICENSE.md", "LICENSES/LGPL-3.0-only.txt", "LICENSES/LGPL-3.0-linking-exception.txt", "LICENSES/GPL-3.0-only.txt"]
 
