@@ -9,21 +9,47 @@ actions = ["fmt", "test", "clippy"]
 # Pre-existing checks above preserved verbatim; hosted Linux gates appended below.
 [checks.verify]
 kind = "commands"
-commands = [["bash", ".ci/verify.sh"]]
-cache_tools = [["rustc", "-vV"], ["cargo", "--version"], ["python3", "--version"], ["node", "--version"], ["curl", "--version"], ["rustup", "run", "nightly", "rustc", "-vV"], ["rustup", "run", "nightly", "cargo", "llvm-cov", "--version"]]
+fleet = true
+commands = [
+  ["ccid", "first-party"],
+  ["cargo", "fmt", "--all", "--check"],
+  ["cargo", "clippy", "--locked", "--all-features", "--all-targets", "--", "-D", "warnings"],
+  ["cargo", "test", "--locked", "--all-features"],
+  ["python3", ".ci/test-provider-regressions.py"],
+  ["cargo", "check", "--locked", "--target", "wasm32-unknown-unknown"],
+  ["bash", "-c", "set -euo pipefail\nPATH=\"$(ccid toolchain wasm-bindgen):$PATH\" CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner cargo test --locked --target wasm32-unknown-unknown --lib"],
+  ["ccid", "coverage", "run"],
+]
+cache_tools = [["rustc", "-vV"], ["cargo", "--version"], ["python3", "--version"], ["node", "--version"], ["rustup", "run", "nightly", "rustc", "-vV"], ["rustup", "run", "nightly", "cargo", "llvm-cov", "--version"]]
 cache_outputs = ["coverage.json", "coverage.lcov", "coverage.txt"]
+
+[checks.advisories]
+kind = "commands"
+commands = [["cargo", "deny", "--all-features", "check", "advisories"]]
+cache_pure = false
 
 [render]
 render_schema = 2
 [jobs.verify]
 scheduler = "forgejo"
 runs_on = "linux"
-checks = ["verify"]
+checks = ["verify", "advisories"]
 workflow = "ci"
-command = ["bash", ".ci/run-cached.sh"]
+command = ["ccid:run-declared-checks"]
 events = ["manual"]
 
 [check_shell]
 
 [security]
 dependencies = "cargo-deny"
+
+[coverage]
+artifacts = true
+
+[runtime]
+tools = ["python3", "nodejs_24", "cargo-llvm-cov", "cargo-deny"]
+install_root = true
+
+[toolchain]
+nightly = true
+targets = ["stable:wasm32-unknown-unknown"]

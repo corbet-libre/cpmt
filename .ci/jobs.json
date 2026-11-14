@@ -2,18 +2,18 @@
   "schema": 1,
   "generator": "ccid render v1",
   "tool_revision": "",
-  "manifest_sha256": "f0e5cc8f166cd86305bc6d7bb4c6ddd85324056d96e86614952ac21d1939d6a4",
+  "manifest_sha256": "d2f874b315acf102650fb153a4b9ff1fc060845de029cb463e5453ecc9f85aef",
   "jobs": {
     "verify": {
       "job": "verify",
       "scheduler": "forgejo",
       "checks": [
-        "verify"
+        "verify",
+        "advisories"
       ],
       "workflow": "ci",
       "command": [
-        "bash",
-        ".ci/run-cached.sh"
+        "ccid:run-declared-checks"
       ],
       "runs_on": "linux",
       "events": [
