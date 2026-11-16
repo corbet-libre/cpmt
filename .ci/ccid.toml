@@ -46,6 +46,26 @@ dependencies = "cargo-deny"
 [coverage]
 artifacts = true
 
+[[coverage.exclusions]]
+file = "src/payments/engine.rs"
+line = 53
+source = "Mode::Simulation => unreachable!(),"
+reason = "account_identity returns Error::Invalid for Mode::Simulation in the guard above, so the Simulation arm of the mode name match is never reached."
+targets = ["native"]
+
+[coverage.exclusions.evidence_sources]
+"src/payments/engine.rs" = "4116a48b29905a53966ae7a72e09d5787da130c804cab8c11c457b5f90305961"
+
+[[coverage.exclusions]]
+file = "src/payments/engine.rs"
+line = 63
+source = ".map_err(|_| Error::Invalid)?;"
+reason = "serde_json::to_vec of a tuple of a string literal, four borrowed strings and a mode name cannot fail: every element serializes infallibly and no map keys are involved."
+targets = ["native"]
+
+[coverage.exclusions.evidence_sources]
+"src/payments/engine.rs" = "4116a48b29905a53966ae7a72e09d5787da130c804cab8c11c457b5f90305961"
+
 [runtime]
 tools = ["python3", "nodejs_24", "cargo-llvm-cov", "cargo-deny"]
 install_root = true

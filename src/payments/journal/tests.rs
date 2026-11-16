@@ -17,6 +17,7 @@ fn account_identity_binds_exact_nonsecret_configuration_with_the_existing_key_an
         Mode::Production,
         7,
     );
+    assert_ne!(*original.as_bytes(), [0; 32]);
     assert!(
         original
             == binding(
