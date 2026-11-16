@@ -186,3 +186,45 @@ async fn metadata_projection_preserves_real_execution_and_only_removes_provider_
             .is_ok()
     );
 }
+
+#[test]
+fn account_identity_refuses_unusable_endpoints_and_still_wipes_the_key_copy() {
+    let long = format!("https://{}", "a".repeat(2048));
+    for endpoint in [
+        "",
+        "   ",
+        long.as_str(),
+        "https://facilitator.test/\nx",
+        "https://facilitator.test/\u{7f}",
+    ] {
+        let mut copy = [7; 32];
+        assert!(
+            account_identity(
+                &mut copy,
+                "alpha",
+                "provider",
+                "account",
+                endpoint,
+                Mode::Production
+            )
+            .is_err(),
+            "{endpoint:?}"
+        );
+        assert_eq!(copy, [0; 32]);
+    }
+    // The boundary itself is accepted.
+    let boundary = format!("https://{}", "a".repeat(2048 - "https://".len()));
+    assert_eq!(boundary.len(), 2048);
+    let mut copy = [7; 32];
+    assert!(
+        account_identity(
+            &mut copy,
+            "alpha",
+            "provider",
+            "account",
+            &boundary,
+            Mode::Sandbox
+        )
+        .is_ok()
+    );
+}
